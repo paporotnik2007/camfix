@@ -1,0 +1,2794 @@
+name: Build CamFix APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create project files
+        run: |
+          mkdir -p proj/app/src/main/java/com/camfix proj/app/src/main/res/drawable
+          cat > proj/settings.gradle <<'EOF_CAMFIX'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "camfix"
+          include ':app'
+          EOF_CAMFIX
+          cat > proj/build.gradle <<'EOF_CAMFIX'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          EOF_CAMFIX
+          cat > proj/gradle.properties <<'EOF_CAMFIX'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          EOF_CAMFIX
+          cat > proj/app/build.gradle <<'EOF_CAMFIX'
+          plugins {
+              id 'com.android.application'
+          }
+          android {
+              namespace 'com.camfix'
+              compileSdk 35
+              defaultConfig {
+                  applicationId 'com.camfix'
+                  minSdk 30
+                  targetSdk 34
+                  versionCode 3
+                  versionName '2.1'
+              }
+              signingConfigs {
+                  release {
+                      storeFile file('camfix.jks')
+                      storePassword 'camfix123'
+                      keyAlias 'camfix'
+                      keyPassword 'camfix123'
+                  }
+              }
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      signingConfig signingConfigs.release
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+                  encoding 'UTF-8'
+              }
+              lint {
+                  checkReleaseBuilds false
+                  abortOnError false
+              }
+          }
+          dependencies {
+              implementation 'com.google.mlkit:barcode-scanning:17.3.0'
+          }
+          EOF_CAMFIX
+          cat > proj/app/src/main/AndroidManifest.xml <<'EOF_CAMFIX'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-feature android:name="android.hardware.camera.any" android:required="true" />
+              <uses-feature android:name="android.hardware.microphone" android:required="false" />
+              <application
+                  android:label="CamFix"
+                  android:icon="@drawable/ic_launcher"
+                  android:roundIcon="@drawable/ic_launcher"
+                  android:allowBackup="false"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait"
+                      android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.media.action.STILL_IMAGE_CAMERA" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.media.action.VIDEO_CAMERA" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.media.action.IMAGE_CAPTURE" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.media.action.IMAGE_CAPTURE_SECURE" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.media.action.VIDEO_CAPTURE" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_CAMFIX
+          cat > proj/app/src/main/res/drawable/ic_launcher.xml <<'EOF_CAMFIX'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#1E2A38" android:pathData="M54,4a50,50 0 1,1 0,100a50,50 0 1,1 0,-100z" />
+              <path android:fillColor="#FFFFFF" android:pathData="M30,40h12l5,-7h14l5,7h12a4,4 0 0,1 4,4v28a4,4 0 0,1 -4,4h-48a4,4 0 0,1 -4,-4v-28a4,4 0 0,1 4,-4z" />
+              <path android:fillColor="#1E2A38" android:pathData="M54,44a14,14 0 1,1 0,28a14,14 0 1,1 0,-28z" />
+              <path android:fillColor="#FFD54F" android:pathData="M54,49a9,9 0 1,1 0,18a9,9 0 1,1 0,-18z" />
+          </vector>
+          EOF_CAMFIX
+          cat > proj/app/src/main/java/com/camfix/MainActivity.java <<'EOF_CAMFIX'
+          package com.camfix;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.app.AlertDialog;
+          import android.content.ActivityNotFoundException;
+          import android.content.ClipData;
+          import android.content.ClipboardManager;
+          import android.content.ContentValues;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.PackageManager;
+          import android.database.Cursor;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.graphics.BitmapRegionDecoder;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.ImageFormat;
+          import android.graphics.Matrix;
+          import android.graphics.Paint;
+          import android.graphics.Rect;
+          import android.graphics.SurfaceTexture;
+          import android.graphics.drawable.GradientDrawable;
+          import android.hardware.camera2.CameraAccessException;
+          import android.hardware.camera2.CameraCaptureSession;
+          import android.hardware.camera2.CameraCharacteristics;
+          import android.hardware.camera2.CameraDevice;
+          import android.hardware.camera2.CameraManager;
+          import android.hardware.camera2.CameraMetadata;
+          import android.hardware.camera2.CaptureFailure;
+          import android.hardware.camera2.CaptureRequest;
+          import android.hardware.camera2.CaptureResult;
+          import android.hardware.camera2.TotalCaptureResult;
+          import android.hardware.camera2.params.MeteringRectangle;
+          import android.hardware.camera2.params.OutputConfiguration;
+          import android.hardware.camera2.params.SessionConfiguration;
+          import android.hardware.camera2.params.StreamConfigurationMap;
+          import android.media.ExifInterface;
+          import android.media.Image;
+          import android.media.ImageReader;
+          import android.media.MediaActionSound;
+          import android.media.MediaCodec;
+          import android.media.MediaRecorder;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.os.Handler;
+          import android.os.HandlerThread;
+          import android.os.Looper;
+          import android.os.ParcelFileDescriptor;
+          import android.os.SystemClock;
+          import android.provider.MediaStore;
+          import android.util.Range;
+          import android.util.Size;
+          import android.util.SizeF;
+          import android.util.TypedValue;
+          import android.view.GestureDetector;
+          import android.view.Gravity;
+          import android.view.HapticFeedbackConstants;
+          import android.view.KeyEvent;
+          import android.view.MotionEvent;
+          import android.view.OrientationEventListener;
+          import android.view.ScaleGestureDetector;
+          import android.view.Surface;
+          import android.view.TextureView;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.view.WindowInsets;
+          import android.view.WindowInsetsController;
+          import android.view.WindowManager;
+          import android.widget.Button;
+          import android.widget.FrameLayout;
+          import android.widget.ImageView;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import com.google.mlkit.vision.barcode.BarcodeScanner;
+          import com.google.mlkit.vision.barcode.BarcodeScanning;
+          import com.google.mlkit.vision.barcode.common.Barcode;
+          import com.google.mlkit.vision.common.InputImage;
+
+          import java.io.ByteArrayInputStream;
+          import java.io.ByteArrayOutputStream;
+          import java.io.File;
+          import java.io.OutputStream;
+          import java.nio.ByteBuffer;
+          import java.text.SimpleDateFormat;
+          import java.util.ArrayDeque;
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.Date;
+          import java.util.HashMap;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Map;
+          import java.util.Set;
+          import java.util.concurrent.Executor;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+
+          /**
+           * CamFix: камера для Galaxy S25 со сломанным широкоугольным модулем.
+           *
+           * Главный принцип: задняя камера открывается как логическая (ID 0), но каждый
+           * поток жёстко привязан к физическому модулю (основной или телевик) через
+           * OutputConfiguration.setPhysicalCameraId. Широкоугольный модуль и «умный»
+           * зум Samsung (CONTROL_ZOOM_RATIO) не используются никогда.
+           */
+          public class MainActivity extends Activity {
+
+              // ----------------------------------------------------------- константы
+              static final int MODE_PHOTO = 0, MODE_VIDEO = 1, MODE_SCAN = 2;
+              static final int MOD_MAIN = 0, MOD_TELE = 1;
+              static final int FLASH_OFF = 0, FLASH_AUTO = 1, FLASH_ON = 2;
+
+              static final int ST_PREVIEW = 0, ST_WAIT_AF = 1, ST_WAIT_PRE = 2, ST_WAIT_NONPRE = 3, ST_TAKEN = 4;
+
+              static final float ZOOM_STEP = 0.2f;
+              static final int ASPECT_4_3 = 0, ASPECT_16_9 = 1, ASPECT_1_1 = 2;
+              static final float MAX_ZOOM_TELE = 10f;
+              static final float MAX_ZOOM_NO_TELE = 4f;
+              static final float MAX_ZOOM_FRONT = 4f;
+
+              // ------------------------------------------------- устройство камер
+              private CameraManager cm;
+              private String backLogicalId;   // логическая задняя (0)
+              private String mainPhysId;      // основной модуль (5)
+              private String telePhysId;      // телевик (6) или null
+              private String ultraWideId;     // широкоугольный (2) — только для справки, НЕ используется
+              private String backPlainId;     // запасной вариант, если нет логической камеры
+              private String frontId;
+              private float teleRatio = 3f;
+              private boolean backPhysCropOk = false; // драйвер разрешает обрезку кадра на физическом модуле (зум в видео)
+
+              // ------------------------------------- выбор пользователя (UI поток)
+              private volatile int mode = MODE_PHOTO;
+              private volatile boolean front = false;
+              private volatile float zoom = 1f;
+              private volatile int uiModule = MOD_MAIN;
+              private volatile int flashMode = FLASH_OFF;
+              private volatile int deviceDeg = 0;
+              private volatile boolean paused = true;
+              private volatile boolean reconfiguring = false;
+              private volatile boolean recordingUi = false;
+              private boolean pendingOpen = false;
+
+              private volatile String videoRes = "1080"; // "1080" или "2160"
+              private volatile int videoFps = 30;
+              private volatile boolean stabilization = true;
+              private boolean gridOn = false;
+              private volatile boolean soundOn = true;
+              private int timerSec = 0;                 // 0 / 3 / 10
+              private volatile int aspect = ASPECT_4_3; // пропорции фото
+              private volatile int evSteps = 0;         // поправка экспозиции (в шагах драйвера)
+              private boolean evManual = false;
+              private int evMin = 0, evMax = 0;
+              private float evStep = 0.1f;
+              private volatile float bufAspect = 4f / 3f; // длинная/короткая сторона кадра превью
+              private volatile boolean videoSnapshotOk = true;
+              private int countdownLeft = 0;
+
+              private int intentMode = -1;          // -1 обычный запуск; иначе MODE_PHOTO / MODE_VIDEO
+              private Uri intentOutput;
+
+              private volatile Uri lastUri;
+              private volatile String lastMime;
+
+              // --------------------------------------- состояние камеры (поток cam)
+              private HandlerThread camThread;
+              private Handler cam;
+              private Executor camExec;
+              private final Handler ui = new Handler(Looper.getMainLooper());
+              private final ExecutorService saver = Executors.newSingleThreadExecutor();
+
+              private CameraDevice device;
+              private String deviceId;
+              private volatile CameraCharacteristics devChars;
+              private volatile CameraCharacteristics streamChars;
+              private String streamPhys;
+              private CameraCaptureSession session;
+              private Surface previewSurface;
+              private ImageReader jpegReader;
+              private ImageReader yuvReader;
+              private Surface recSurface;
+              private MediaRecorder recorder;
+              private boolean recording = false;
+              private Uri recUri;
+              private boolean recInMediaStore;
+              private ParcelFileDescriptor recPfd;
+              private long recStart;
+              private int gen = 0;
+              private int sgen = 0;
+              private int captureState = ST_PREVIEW;
+              private boolean flashUsedInCapture = false;
+              private int retries = 0;
+              private boolean gotFrame = false;
+              private Size previewSize;
+              private Size videoSize;
+              private int fpsUsed = 30;
+              private MeteringRectangle[] focusRegions;
+              private final ArrayDeque<float[]> pendingJobs = new ArrayDeque<>(); // {зум-обрезка, пропорции}
+
+              // ----------------------------------------------------------------- UI
+              private FrameLayout root;
+              private TextureView tv;
+              private GridOverlay grid;
+              private FocusRing ring;
+              private TextView flashBtn, settingsBtn, recTimer, zoomLabel, chip1, chipTele, flipBtn;
+              private TextView timerBtn, aspectBtn, evLabel, snapBtn, countdownText;
+              private VSlider zoomSlider, evSlider;
+              private LinearLayout bottomPanel, evBox;
+              private TextView modePhoto, modeVideo, modeScan, infoText;
+              private LinearLayout modeRow;
+              private ImageView thumb;
+              private View shutter;
+              private GradientDrawable shutterBg;
+              private LinearLayout scanPanel;
+              private TextView scanText;
+              private Button scanOpen;
+              private String scanValue;
+              private boolean scanIsUrl;
+              private volatile boolean scanBusy = false;
+              private volatile boolean scanPaused = false;
+
+              private BarcodeScanner barcodeScanner;
+              private MediaActionSound sound;
+              private OrientationEventListener orientationListener;
+              private ScaleGestureDetector scaleDetector;
+              private GestureDetector tapDetector;
+              private SharedPreferences prefs;
+
+              private final StringBuilder diag = new StringBuilder();
+
+              // =====================================================================
+              //                              ЖИЗНЕННЫЙ ЦИКЛ
+              // =====================================================================
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+                  prefs = getSharedPreferences("camfix", MODE_PRIVATE);
+                  videoRes = prefs.getString("videoRes", "1080");
+                  videoFps = prefs.getInt("videoFps", 30);
+                  gridOn = prefs.getBoolean("grid", false);
+                  stabilization = prefs.getBoolean("stab", true);
+                  soundOn = prefs.getBoolean("sound", true);
+                  timerSec = prefs.getInt("timer", 0);
+                  aspect = prefs.getInt("aspect", ASPECT_4_3);
+
+                  String action = getIntent() != null ? getIntent().getAction() : null;
+                  if (MediaStore.ACTION_IMAGE_CAPTURE.equals(action) || MediaStore.ACTION_IMAGE_CAPTURE_SECURE.equals(action)) {
+                      intentMode = MODE_PHOTO;
+                      intentOutput = getIntent().getParcelableExtra(MediaStore.EXTRA_OUTPUT);
+                  } else if (MediaStore.ACTION_VIDEO_CAPTURE.equals(action)) {
+                      intentMode = MODE_VIDEO;
+                      intentOutput = getIntent().getParcelableExtra(MediaStore.EXTRA_OUTPUT);
+                  } else if (MediaStore.INTENT_ACTION_VIDEO_CAMERA.equals(action)) {
+                      mode = MODE_VIDEO;
+                  }
+                  if (intentMode >= 0) mode = intentMode;
+
+                  cm = (CameraManager) getSystemService(CAMERA_SERVICE);
+                  camThread = new HandlerThread("camera");
+                  camThread.start();
+                  cam = new Handler(camThread.getLooper());
+                  camExec = r -> cam.post(r);
+
+                  try {
+                      sound = new MediaActionSound();
+                      sound.load(MediaActionSound.SHUTTER_CLICK);
+                      sound.load(MediaActionSound.START_VIDEO_RECORDING);
+                      sound.load(MediaActionSound.STOP_VIDEO_RECORDING);
+                  } catch (Exception e) {
+                      sound = null;
+                  }
+                  try {
+                      barcodeScanner = BarcodeScanning.getClient();
+                  } catch (Exception e) {
+                      barcodeScanner = null;
+                      log("Сканер не запустился: " + e);
+                  }
+
+                  buildUi();
+                  detectCameras();
+
+                  orientationListener = new OrientationEventListener(this) {
+                      @Override
+                      public void onOrientationChanged(int o) {
+                          if (o == ORIENTATION_UNKNOWN) return;
+                          int r = ((o + 45) / 90 * 90) % 360;
+                          if (r != deviceDeg) {
+                              deviceDeg = r;
+                              rotateIcons(r);
+                          }
+                      }
+                  };
+
+                  if (!hasPerm(Manifest.permission.CAMERA)) {
+                      requestPermissions(new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO}, 1);
+                  } else if (!hasPerm(Manifest.permission.RECORD_AUDIO) && !prefs.getBoolean("askedAudio", false)) {
+                      prefs.edit().putBoolean("askedAudio", true).apply();
+                      requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 2);
+                  }
+                  updateUi();
+                  loadLastThumbAsync();
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  paused = false;
+                  hideSystemBars();
+                  if (orientationListener.canDetectOrientation()) orientationListener.enable();
+                  if (hasPerm(Manifest.permission.CAMERA)) openCamera();
+              }
+
+              @Override
+              protected void onPause() {
+                  paused = true;
+                  cancelCountdown();
+                  orientationListener.disable();
+                  recordingUi = false;
+                  ui.removeCallbacks(recTick);
+                  cam.post(this::closeAllOnCam);
+                  super.onPause();
+              }
+
+              @Override
+              protected void onDestroy() {
+                  cam.post(this::closeAllOnCam);
+                  camThread.quitSafely();
+                  saver.shutdown();
+                  if (barcodeScanner != null) barcodeScanner.close();
+                  if (sound != null) sound.release();
+                  super.onDestroy();
+              }
+
+              @Override
+              public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+                  super.onRequestPermissionsResult(code, perms, results);
+                  if (hasPerm(Manifest.permission.CAMERA)) {
+                      infoText.setVisibility(View.GONE);
+                      if (!paused) openCamera();
+                  } else {
+                      infoText.setText("Нет доступа к камере.\nРазрешите камеру в настройках приложения CamFix.");
+                      infoText.setVisibility(View.VISIBLE);
+                  }
+              }
+
+              private boolean hasPerm(String p) {
+                  return checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED;
+              }
+
+              private void hideSystemBars() {
+                  try {
+                      WindowInsetsController c = getWindow().getInsetsController();
+                      if (c != null) {
+                          c.hide(WindowInsets.Type.statusBars());
+                          c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                      }
+                  } catch (Exception ignored) { }
+              }
+
+              // =====================================================================
+              //                           ОПРЕДЕЛЕНИЕ МОДУЛЕЙ
+              // =====================================================================
+
+              private static float fovOf(CameraCharacteristics c) {
+                  float[] fl = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                  float f = Float.MAX_VALUE;
+                  if (fl != null) for (float x : fl) f = Math.min(f, x);
+                  if (f == Float.MAX_VALUE || f <= 0) f = 5f;
+                  SizeF ps = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+                  float w = ps != null ? ps.getWidth() : 5f;
+                  return w / f; // чем больше, тем шире угол обзора
+              }
+
+              private void detectCameras() {
+                  log("Устройство: " + Build.MODEL + ", SDK " + Build.VERSION.SDK_INT);
+                  try {
+                      for (String id : cm.getCameraIdList()) {
+                          CameraCharacteristics c = cm.getCameraCharacteristics(id);
+                          Integer facing = c.get(CameraCharacteristics.LENS_FACING);
+                          Set<String> phys = c.getPhysicalCameraIds();
+                          log("Камера " + id + (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT ? " фронт" : " задняя")
+                                  + (phys.isEmpty() ? "" : ", модули " + phys));
+                          if (facing == null) continue;
+                          if (facing == CameraCharacteristics.LENS_FACING_FRONT) {
+                              if (frontId == null) frontId = id;
+                              continue;
+                          }
+                          if (facing != CameraCharacteristics.LENS_FACING_BACK) continue;
+                          if (backPlainId == null) backPlainId = id;
+                          if (backLogicalId == null && phys.size() >= 2) {
+                              Map<String, Float> fov = new HashMap<>();
+                              for (String p : phys) {
+                                  try {
+                                      fov.put(p, fovOf(cm.getCameraCharacteristics(p)));
+                                  } catch (Exception e) {
+                                      log("  модуль " + p + " не читается: " + e);
+                                  }
+                              }
+                              if (fov.size() < 2) continue;
+                              List<String> sorted = new ArrayList<>(fov.keySet());
+                              sorted.sort((a, b) -> Float.compare(fov.get(b), fov.get(a))); // от широкого к узкому
+                              ultraWideId = sorted.get(0);
+                              List<String> rest = sorted.subList(1, sorted.size());
+                              backLogicalId = id;
+                              mainPhysId = rest.get(0);
+                              telePhysId = rest.size() > 1 ? rest.get(rest.size() - 1) : null;
+                              if (telePhysId != null) {
+                                  teleRatio = fov.get(mainPhysId) / fov.get(telePhysId);
+                                  if (teleRatio < 1.5f || teleRatio > 10f) teleRatio = 3f;
+                                  // как у Samsung: 2.9x называем 3x (разница в угле ~3%, на глаз незаметна)
+                                  float rounded = Math.round(teleRatio);
+                                  teleRatio = Math.abs(teleRatio - rounded) <= 0.2f ? rounded : Math.round(teleRatio * 10f) / 10f;
+                              }
+                              List<CaptureRequest.Key<?>> pk = c.getAvailablePhysicalCameraRequestKeys();
+                              backPhysCropOk = pk != null && pk.contains(CaptureRequest.SCALER_CROP_REGION);
+                              for (String p : sorted) {
+                                  log(String.format(Locale.US, "  модуль %s: угол %.3f%s", p, fov.get(p),
+                                          p.equals(ultraWideId) ? " — ШИРОКОУГОЛЬНЫЙ, ОТКЛЮЧЁН"
+                                                  : p.equals(mainPhysId) ? " — основной"
+                                                  : p.equals(telePhysId) ? " — телевик" : ""));
+                              }
+                              log("  телевик = " + teleRatio + "x, зум в видео драйвером: " + (backPhysCropOk ? "да" : "нет"));
+                          }
+                      }
+                  } catch (Exception e) {
+                      log("Ошибка чтения камер: " + e);
+                  }
+                  if (backLogicalId == null) log("Логическая задняя камера не найдена, будет обычный режим " + backPlainId);
+              }
+
+              private boolean hasTele() {
+                  return !front && backLogicalId != null && telePhysId != null;
+              }
+
+              // =====================================================================
+              //                               ИНТЕРФЕЙС
+              // =====================================================================
+
+              private int dp(float v) {
+                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
+              }
+
+              private TextView iconText(String s, float sizeSp) {
+                  TextView t = new TextView(this);
+                  t.setText(s);
+                  t.setTextColor(Color.WHITE);
+                  t.setTextSize(sizeSp);
+                  t.setGravity(Gravity.CENTER);
+                  t.setPadding(dp(12), dp(8), dp(12), dp(8));
+                  return t;
+              }
+
+              private TextView chip(String s) {
+                  TextView t = iconText(s, 14);
+                  GradientDrawable g = new GradientDrawable();
+                  g.setShape(GradientDrawable.OVAL);
+                  g.setColor(0x99000000);
+                  t.setBackground(g);
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), dp(48));
+                  lp.setMargins(dp(10), 0, dp(10), 0);
+                  t.setLayoutParams(lp);
+                  t.setPadding(0, 0, 0, 0);
+                  return t;
+              }
+
+              private void buildUi() {
+                  root = new FrameLayout(this);
+                  root.setBackgroundColor(Color.BLACK);
+
+                  tv = new TextureView(this);
+                  root.addView(tv, new FrameLayout.LayoutParams(1, 1, Gravity.TOP | Gravity.CENTER_HORIZONTAL));
+                  grid = new GridOverlay(this);
+                  grid.setVisibility(gridOn ? View.VISIBLE : View.GONE);
+                  root.addView(grid, new FrameLayout.LayoutParams(1, 1, Gravity.TOP | Gravity.CENTER_HORIZONTAL));
+                  ring = new FocusRing(this);
+                  root.addView(ring, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+                  tv.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+                      @Override
+                      public void onSurfaceTextureAvailable(SurfaceTexture st, int w, int h) {
+                          applyPreviewTransform();
+                          if (pendingOpen) {
+                              pendingOpen = false;
+                              openCamera();
+                          }
+                      }
+
+                      @Override
+                      public void onSurfaceTextureSizeChanged(SurfaceTexture st, int w, int h) {
+                          applyPreviewTransform();
+                      }
+
+                      @Override
+                      public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
+                          return true;
+                      }
+
+                      @Override
+                      public void onSurfaceTextureUpdated(SurfaceTexture st) { }
+                  });
+
+                  scaleDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                      @Override
+                      public boolean onScale(ScaleGestureDetector d) {
+                          setZoom(zoom * d.getScaleFactor());
+                          return true;
+                      }
+                  });
+                  tapDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+                      @Override
+                      public boolean onSingleTapUp(MotionEvent e) {
+                          onTapFocus(e.getX(), e.getY());
+                          return true;
+                      }
+                  });
+                  tv.setOnTouchListener((v, e) -> {
+                      scaleDetector.onTouchEvent(e);
+                      if (!scaleDetector.isInProgress()) tapDetector.onTouchEvent(e);
+                      return true;
+                  });
+
+                  // ---- верхняя панель
+                  LinearLayout top = new LinearLayout(this);
+                  top.setOrientation(LinearLayout.HORIZONTAL);
+                  top.setGravity(Gravity.CENTER_VERTICAL);
+                  top.setBackgroundColor(0x66000000);
+                  flashBtn = iconText("⚡ Выкл", 15);
+                  flashBtn.setOnClickListener(v -> cycleFlash());
+                  recTimer = iconText("", 16);
+                  recTimer.setTextColor(0xFFFF4444);
+                  settingsBtn = iconText("⚙", 22);
+                  settingsBtn.setOnClickListener(v -> showSettings());
+                  timerBtn = iconText("⏱ Выкл", 15);
+                  timerBtn.setOnClickListener(v -> cycleTimer());
+                  aspectBtn = iconText("4:3", 15);
+                  aspectBtn.setOnClickListener(v -> cycleAspect());
+                  top.addView(flashBtn, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  top.addView(timerBtn, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  top.addView(aspectBtn, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+                  top.addView(recTimer, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+                  top.addView(settingsBtn, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  root.addView(top, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56), Gravity.TOP));
+
+                  // ---- нижняя панель
+                  LinearLayout bottom = new LinearLayout(this);
+                  bottomPanel = bottom;
+                  bottom.setOrientation(LinearLayout.VERTICAL);
+                  bottom.setGravity(Gravity.CENTER_HORIZONTAL);
+                  bottom.setPadding(0, dp(8), 0, dp(20));
+                  bottom.setBackgroundColor(0x66000000);
+
+                  LinearLayout zoomRow = new LinearLayout(this);
+                  zoomRow.setOrientation(LinearLayout.HORIZONTAL);
+                  zoomRow.setGravity(Gravity.CENTER);
+                  chip1 = chip("1x");
+                  chip1.setOnClickListener(v -> setZoom(1f));
+                  zoomLabel = iconText("1.0x", 16);
+                  zoomLabel.setTextColor(0xFFFFD54F);
+                  chipTele = chip(fmtZoom(teleRatio));
+                  chipTele.setOnClickListener(v -> setZoom(teleRatio));
+                  zoomRow.addView(chip1);
+                  zoomRow.addView(zoomLabel);
+                  zoomRow.addView(chipTele);
+                  bottom.addView(zoomRow);
+
+                  modeRow = new LinearLayout(this);
+                  modeRow.setOrientation(LinearLayout.HORIZONTAL);
+                  modeRow.setGravity(Gravity.CENTER);
+                  modePhoto = iconText("ФОТО", 15);
+                  modeVideo = iconText("ВИДЕО", 15);
+                  modeScan = iconText("СКАНЕР", 15);
+                  modePhoto.setOnClickListener(v -> switchMode(MODE_PHOTO));
+                  modeVideo.setOnClickListener(v -> switchMode(MODE_VIDEO));
+                  modeScan.setOnClickListener(v -> switchMode(MODE_SCAN));
+                  modeRow.addView(modePhoto);
+                  modeRow.addView(modeVideo);
+                  modeRow.addView(modeScan);
+                  bottom.addView(modeRow);
+
+                  LinearLayout shutterRow = new LinearLayout(this);
+                  shutterRow.setOrientation(LinearLayout.HORIZONTAL);
+                  shutterRow.setGravity(Gravity.CENTER_VERTICAL);
+                  shutterRow.setPadding(dp(24), dp(8), dp(24), 0);
+
+                  thumb = new ImageView(this);
+                  thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                  GradientDrawable tb = new GradientDrawable();
+                  tb.setCornerRadius(dp(10));
+                  tb.setColor(0xFF333333);
+                  tb.setStroke(dp(2), Color.WHITE);
+                  thumb.setBackground(tb);
+                  thumb.setClipToOutline(true);
+                  thumb.setOnClickListener(v -> openLast());
+                  // слева: миниатюра, а во время записи на её месте — кнопка снимка
+                  FrameLayout leftSlot = new FrameLayout(this);
+                  leftSlot.addView(thumb, new FrameLayout.LayoutParams(dp(54), dp(54)));
+                  snapBtn = iconText("📷", 24);
+                  GradientDrawable snb = new GradientDrawable();
+                  snb.setShape(GradientDrawable.OVAL);
+                  snb.setColor(0xCCFFFFFF);
+                  snapBtn.setBackground(snb);
+                  snapBtn.setPadding(0, 0, 0, 0);
+                  snapBtn.setVisibility(View.GONE);
+                  snapBtn.setOnClickListener(v -> takeVideoSnapshot());
+                  leftSlot.addView(snapBtn, new FrameLayout.LayoutParams(dp(54), dp(54)));
+                  shutterRow.addView(leftSlot, new LinearLayout.LayoutParams(dp(54), dp(54)));
+                  shutterRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+
+                  shutter = new View(this);
+                  shutterBg = new GradientDrawable();
+                  shutter.setBackground(shutterBg);
+                  shutter.setOnClickListener(v -> onShutter());
+                  shutterRow.addView(shutter, new LinearLayout.LayoutParams(dp(76), dp(76)));
+                  shutterRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+
+                  flipBtn = iconText("🔄", 26);
+                  GradientDrawable fb = new GradientDrawable();
+                  fb.setShape(GradientDrawable.OVAL);
+                  fb.setColor(0x55FFFFFF);
+                  flipBtn.setBackground(fb);
+                  flipBtn.setPadding(0, 0, 0, 0);
+                  flipBtn.setOnClickListener(v -> flipCamera());
+                  shutterRow.addView(flipBtn, new LinearLayout.LayoutParams(dp(54), dp(54)));
+                  bottom.addView(shutterRow);
+
+                  root.addView(bottom, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM));
+
+                  // ---- ползунок зума: справа внизу, над панелью кнопок, виден всегда
+                  zoomSlider = new VSlider(this, true);
+                  zoomSlider.setListener(t -> {
+                      float z = (float) Math.exp(t * Math.log(maxZoom()));
+                      setZoom(Math.round(z * 10f) / 10f);
+                  });
+                  root.addView(zoomSlider, new FrameLayout.LayoutParams(dp(84), dp(260), Gravity.BOTTOM | Gravity.RIGHT));
+
+                  // ---- экспозиция: слева вверху, видна всегда; нажатие на подпись — снова «Авто»
+                  evBox = new LinearLayout(this);
+                  evBox.setOrientation(LinearLayout.VERTICAL);
+                  evBox.setGravity(Gravity.CENTER_HORIZONTAL);
+                  evLabel = iconText("☀ Авто", 14);
+                  evLabel.setPadding(dp(4), dp(4), dp(4), dp(4));
+                  GradientDrawable evb = new GradientDrawable();
+                  evb.setCornerRadius(dp(12));
+                  evb.setColor(0x88000000);
+                  evLabel.setBackground(evb);
+                  evLabel.setOnClickListener(v -> setEv(0, false));
+                  evSlider = new VSlider(this, false);
+                  evSlider.setListener(t -> {
+                      int s = Math.round(evMin + t * (evMax - evMin));
+                      setEv(s, true);
+                  });
+                  evBox.addView(evLabel, new LinearLayout.LayoutParams(dp(84), ViewGroup.LayoutParams.WRAP_CONTENT));
+                  evBox.addView(evSlider, new LinearLayout.LayoutParams(dp(84), dp(230)));
+                  FrameLayout.LayoutParams evp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.LEFT);
+                  evp.topMargin = dp(64);
+                  evp.leftMargin = dp(2);
+                  root.addView(evBox, evp);
+
+                  // ---- обратный отсчёт таймера
+                  countdownText = iconText("", 96);
+                  countdownText.setTextColor(0xEEFFFFFF);
+                  countdownText.setShadowLayer(12f, 0f, 0f, Color.BLACK);
+                  countdownText.setVisibility(View.GONE);
+                  root.addView(countdownText, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+
+                  // ---- результат сканера
+                  scanPanel = new LinearLayout(this);
+                  scanPanel.setOrientation(LinearLayout.VERTICAL);
+                  scanPanel.setPadding(dp(20), dp(16), dp(20), dp(16));
+                  GradientDrawable sp = new GradientDrawable();
+                  sp.setCornerRadius(dp(16));
+                  sp.setColor(0xF0222222);
+                  scanPanel.setBackground(sp);
+                  scanText = new TextView(this);
+                  scanText.setTextColor(Color.WHITE);
+                  scanText.setTextSize(16);
+                  scanText.setTextIsSelectable(true);
+                  scanText.setMaxLines(10);
+                  scanPanel.addView(scanText);
+                  LinearLayout sb = new LinearLayout(this);
+                  sb.setOrientation(LinearLayout.HORIZONTAL);
+                  sb.setPadding(0, dp(12), 0, 0);
+                  scanOpen = new Button(this);
+                  scanOpen.setText("Открыть");
+                  scanOpen.setAllCaps(false);
+                  scanOpen.setOnClickListener(v -> openScanned());
+                  Button scanCopy = new Button(this);
+                  scanCopy.setText("Копировать");
+                  scanCopy.setAllCaps(false);
+                  scanCopy.setOnClickListener(v -> {
+                      copyText(scanValue);
+                      toast("Скопировано");
+                  });
+                  Button scanAgain = new Button(this);
+                  scanAgain.setText("Ещё");
+                  scanAgain.setAllCaps(false);
+                  scanAgain.setOnClickListener(v -> {
+                      scanPanel.setVisibility(View.GONE);
+                      scanPaused = false;
+                  });
+                  sb.addView(scanOpen, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                  sb.addView(scanCopy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                  sb.addView(scanAgain, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                  scanPanel.addView(sb);
+                  scanPanel.setVisibility(View.GONE);
+                  FrameLayout.LayoutParams spl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
+                  spl.setMargins(dp(16), 0, dp(16), 0);
+                  root.addView(scanPanel, spl);
+
+                  infoText = iconText("", 16);
+                  infoText.setVisibility(View.GONE);
+                  root.addView(infoText, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+
+                  setContentView(root);
+                  root.post(this::layoutPreview);
+              }
+
+              /** Высота/ширина окна превью для текущего режима (портрет). */
+              private float viewAspect() {
+                  if (mode == MODE_VIDEO) return 16f / 9f;
+                  if (mode == MODE_SCAN) return 4f / 3f;
+                  if (aspect == ASPECT_16_9) return 16f / 9f;
+                  if (aspect == ASPECT_1_1) return 1f;
+                  return 4f / 3f;
+              }
+
+              /** Размер и положение превью под текущий режим и пропорции. */
+              private void layoutPreview() {
+                  int w = root.getWidth(), h = root.getHeight();
+                  if (w == 0 || h == 0) {
+                      root.post(this::layoutPreview);
+                      return;
+                  }
+                  int ph = Math.round(w * viewAspect());
+                  int top = dp(56);
+                  if (aspect == ASPECT_1_1 && mode == MODE_PHOTO) top = dp(56) + dp(72);
+                  if (top + ph > h) top = Math.max(0, h - ph);
+                  // ползунок зума ставим над нижней панелью
+                  int bh = bottomPanel.getHeight();
+                  if (bh > 0) {
+                      FrameLayout.LayoutParams zp = (FrameLayout.LayoutParams) zoomSlider.getLayoutParams();
+                      zp.bottomMargin = bh + dp(4);
+                      zp.rightMargin = dp(2);
+                      zoomSlider.setLayoutParams(zp);
+                  } else {
+                      bottomPanel.post(this::layoutPreview);
+                  }
+                  FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(w, ph, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+                  lp.topMargin = top;
+                  tv.setLayoutParams(lp);
+                  FrameLayout.LayoutParams gl = new FrameLayout.LayoutParams(w, ph, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+                  gl.topMargin = top;
+                  grid.setLayoutParams(gl);
+                  tv.post(this::applyPreviewTransform);
+              }
+
+              private static String fmtZoom(float z) {
+                  return String.format(Locale.US, (Math.abs(z - Math.round(z)) < 0.05f) ? "%.0fx" : "%.1fx", z);
+              }
+
+              private void updateUi() {
+                  if (root == null) return;
+                  boolean rec = recordingUi;
+                  int sel = 0xFFFFD54F, nsel = 0xFFFFFFFF;
+                  modePhoto.setTextColor(mode == MODE_PHOTO ? sel : nsel);
+                  modeVideo.setTextColor(mode == MODE_VIDEO ? sel : nsel);
+                  modeScan.setTextColor(mode == MODE_SCAN ? sel : nsel);
+                  modeRow.setVisibility(intentMode >= 0 || rec ? View.INVISIBLE : View.VISIBLE);
+                  thumb.setVisibility(intentMode >= 0 || rec ? View.INVISIBLE : View.VISIBLE);
+                  snapBtn.setVisibility(rec && mode == MODE_VIDEO ? View.VISIBLE : View.GONE);
+                  flipBtn.setVisibility(rec || frontId == null ? View.INVISIBLE : View.VISIBLE);
+                  settingsBtn.setVisibility(rec ? View.INVISIBLE : View.VISIBLE);
+                  timerBtn.setVisibility(mode == MODE_SCAN || rec ? View.GONE : View.VISIBLE);
+                  timerBtn.setText(timerSec == 0 ? "⏱ Выкл" : "⏱ " + timerSec + "с");
+                  timerBtn.setTextColor(timerSec == 0 ? Color.WHITE : 0xFFFFD54F);
+                  aspectBtn.setVisibility(mode == MODE_PHOTO ? View.VISIBLE : View.GONE);
+                  aspectBtn.setText(aspect == ASPECT_16_9 ? "16:9" : aspect == ASPECT_1_1 ? "1:1" : "4:3");
+                  updateEvUi();
+                  updateZoomSlider();
+                  shutter.setVisibility(mode == MODE_SCAN ? View.INVISIBLE : View.VISIBLE);
+
+                  if (mode == MODE_PHOTO) {
+                      shutterBg.setShape(GradientDrawable.OVAL);
+                      shutterBg.setColor(Color.WHITE);
+                      shutterBg.setStroke(dp(5), 0xFF888888);
+                  } else if (rec) {
+                      shutterBg.setShape(GradientDrawable.RECTANGLE);
+                      shutterBg.setCornerRadius(dp(14));
+                      shutterBg.setColor(0xFFE53935);
+                      shutterBg.setStroke(dp(5), Color.WHITE);
+                  } else {
+                      shutterBg.setShape(GradientDrawable.OVAL);
+                      shutterBg.setColor(0xFFE53935);
+                      shutterBg.setStroke(dp(5), Color.WHITE);
+                  }
+
+                  boolean flashAvail = cameraHasFlash();
+                  flashBtn.setVisibility(flashAvail ? View.VISIBLE : View.INVISIBLE);
+                  if (mode == MODE_PHOTO) {
+                      flashBtn.setText(flashMode == FLASH_OFF ? "⚡ Выкл" : flashMode == FLASH_AUTO ? "⚡ Авто" : "⚡ Вкл");
+                  } else {
+                      flashBtn.setText(flashMode == FLASH_ON ? "🔦 Вкл" : "🔦 Выкл");
+                  }
+
+                  boolean tele = hasTele();
+                  chipTele.setText(fmtZoom(teleRatio));
+                  chipTele.setVisibility(tele ? View.VISIBLE : View.GONE);
+                  chip1.setVisibility(front ? View.GONE : View.VISIBLE);
+                  zoomLabel.setText(String.format(Locale.US, "%.1fx", zoom));
+                  recTimer.setVisibility(rec ? View.VISIBLE : View.INVISIBLE);
+                  grid.setVisibility(gridOn ? View.VISIBLE : View.GONE);
+              }
+
+              private void rotateIcons(int deg) {
+                  float target = -deg;
+                  View[] vs = {flashBtn, settingsBtn, zoomLabel, chip1, chipTele, thumb, flipBtn, snapBtn, timerBtn, aspectBtn, evLabel, countdownText};
+                  for (View v : vs) {
+                      if (v == null) continue;
+                      float cur = v.getRotation();
+                      float t = target;
+                      while (t - cur > 180) t -= 360;
+                      while (cur - t > 180) t += 360;
+                      v.animate().rotation(t).setDuration(200).start();
+                  }
+              }
+
+              private void toast(String s) {
+                  ui.post(() -> Toast.makeText(this, s, Toast.LENGTH_SHORT).show());
+              }
+
+              private void copyText(String s) {
+                  ClipboardManager c = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                  c.setPrimaryClip(ClipData.newPlainText("CamFix", s == null ? "" : s));
+              }
+
+              private void log(String s) {
+                  String line = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + " " + s;
+                  synchronized (diag) {
+                      diag.append(line).append('\n');
+                      if (diag.length() > 30000) diag.delete(0, diag.length() - 25000);
+                  }
+              }
+
+              private String diagText() {
+                  synchronized (diag) {
+                      return diag.toString();
+                  }
+              }
+
+              // =====================================================================
+              //                          ДЕЙСТВИЯ ПОЛЬЗОВАТЕЛЯ
+              // =====================================================================
+
+              private boolean cameraHasFlash() {
+                  CameraCharacteristics c = devChars;
+                  if (c == null) return !front;
+                  Boolean f = c.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
+                  return f != null && f;
+              }
+
+              private void cycleFlash() {
+                  if (mode == MODE_PHOTO) {
+                      flashMode = (flashMode + 1) % 3;
+                  } else {
+                      flashMode = flashMode == FLASH_ON ? FLASH_OFF : FLASH_ON;
+                  }
+                  updateUi();
+                  cam.post(this::startRepeating);
+              }
+
+              private void switchMode(int m) {
+                  if (recordingUi || m == mode || intentMode >= 0) return;
+                  cancelCountdown();
+                  mode = m;
+                  if (m != MODE_PHOTO && flashMode == FLASH_AUTO) flashMode = FLASH_OFF;
+                  if (m != MODE_PHOTO && flashMode == FLASH_ON) flashMode = FLASH_OFF;
+                  scanPanel.setVisibility(View.GONE);
+                  scanPaused = false;
+                  if (m == MODE_VIDEO && !videoDigitalZoom()) snapZoomForVideo();
+                  uiModule = moduleFor(zoom);
+                  layoutPreview();
+                  updateUi();
+                  reconfigure();
+              }
+
+              private void flipCamera() {
+                  if (recordingUi || frontId == null) return;
+                  cancelCountdown();
+                  front = !front;
+                  zoom = 1f;
+                  uiModule = MOD_MAIN;
+                  flashMode = FLASH_OFF;
+                  evSteps = 0;
+                  evManual = false;
+                  updateUi();
+                  openCamera();
+              }
+
+              private void onShutter() {
+                  if (countdownLeft > 0) { // повторное нажатие отменяет таймер
+                      cancelCountdown();
+                      return;
+                  }
+                  if (mode == MODE_VIDEO && recordingUi) {
+                      cam.post(this::stopRecording);
+                      return;
+                  }
+                  if (timerSec > 0 && (mode == MODE_PHOTO || mode == MODE_VIDEO)) {
+                      startCountdown(timerSec);
+                      return;
+                  }
+                  fireShutter();
+              }
+
+              private void fireShutter() {
+                  if (mode == MODE_PHOTO) {
+                      shutter.animate().scaleX(0.85f).scaleY(0.85f).setDuration(80)
+                              .withEndAction(() -> shutter.animate().scaleX(1f).scaleY(1f).setDuration(80).start()).start();
+                      takePhoto();
+                  } else if (mode == MODE_VIDEO) {
+                      cam.post(() -> {
+                          if (recording) stopRecording();
+                          else startRecording();
+                      });
+                  }
+              }
+
+              // ------------------------------------------------------------ таймер
+
+              private void cycleTimer() {
+                  timerSec = timerSec == 0 ? 3 : timerSec == 3 ? 10 : 0;
+                  prefs.edit().putInt("timer", timerSec).apply();
+                  updateUi();
+              }
+
+              private void startCountdown(int sec) {
+                  countdownLeft = sec;
+                  countdownText.setText(String.valueOf(sec));
+                  countdownText.setVisibility(View.VISIBLE);
+                  ui.removeCallbacks(countdownTick);
+                  ui.postDelayed(countdownTick, 1000);
+              }
+
+              private void cancelCountdown() {
+                  if (countdownLeft == 0) return;
+                  countdownLeft = 0;
+                  ui.removeCallbacks(countdownTick);
+                  countdownText.setVisibility(View.GONE);
+              }
+
+              private final Runnable countdownTick = new Runnable() {
+                  @Override
+                  public void run() {
+                      if (countdownLeft <= 0) return;
+                      countdownLeft--;
+                      if (countdownLeft == 0) {
+                          countdownText.setVisibility(View.GONE);
+                          fireShutter();
+                      } else {
+                          countdownText.setText(String.valueOf(countdownLeft));
+                          ui.postDelayed(this, 1000);
+                      }
+                  }
+              };
+
+              // ---------------------------------------------------------- пропорции
+
+              private void cycleAspect() {
+                  if (mode != MODE_PHOTO) return;
+                  aspect = aspect == ASPECT_4_3 ? ASPECT_16_9 : aspect == ASPECT_16_9 ? ASPECT_1_1 : ASPECT_4_3;
+                  prefs.edit().putInt("aspect", aspect).apply();
+                  layoutPreview();
+                  updateUi();
+              }
+
+              // -------------------------------------------------------- экспозиция
+
+              /** Поток UI: диапазон поправки экспозиции у открытой камеры. */
+              private void updateEvRange() {
+                  CameraCharacteristics c = devChars;
+                  if (c == null) return;
+                  Range<Integer> r = c.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
+                  android.util.Rational st = c.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
+                  evMin = r != null ? r.getLower() : 0;
+                  evMax = r != null ? r.getUpper() : 0;
+                  evStep = st != null ? st.floatValue() : 0.1f;
+                  if (evSteps < evMin || evSteps > evMax) evSteps = 0;
+                  if (evMax > evMin) {
+                      float zeroT = (0f - evMin) / (evMax - evMin);
+                      evSlider.setMarks(new float[]{zeroT, 0f, 1f}, new String[]{"0",
+                              String.format(Locale.US, "%.0f", evMin * evStep),
+                              String.format(Locale.US, "+%.0f", evMax * evStep)});
+                  }
+                  updateEvUi();
+              }
+
+              private void setEv(int steps, boolean manual) {
+                  if (evMax <= evMin) return;
+                  steps = Math.max(evMin, Math.min(evMax, steps));
+                  boolean changed = steps != evSteps;
+                  evSteps = steps;
+                  evManual = manual;
+                  updateEvUi();
+                  if (changed || !manual) pushRepeating();
+              }
+
+              private void updateEvUi() {
+                  if (evSlider == null) return;
+                  boolean avail = evMax > evMin;
+                  evBox.setVisibility(avail && mode != MODE_SCAN ? View.VISIBLE : View.GONE);
+                  if (!avail) return;
+                  float ev = evSteps * evStep;
+                  String val = String.format(Locale.US, "%+.1f", ev);
+                  if (!evManual && evSteps == 0) {
+                      evLabel.setText("☀ Авто");
+                      evLabel.setTextColor(Color.WHITE);
+                  } else {
+                      evLabel.setText("☀ " + val);
+                      evLabel.setTextColor(0xFFFFD54F);
+                  }
+                  evSlider.setValue((float) (evSteps - evMin) / (evMax - evMin), evManual || evSteps != 0 ? val : "");
+              }
+
+              /** Сжимает частые изменения (ползунки) в одно обновление запроса к камере. */
+              private void pushRepeating() {
+                  cam.removeCallbacks(repeatRunnable);
+                  cam.post(repeatRunnable);
+              }
+
+              private final Runnable repeatRunnable = this::startRepeating;
+
+              // ------------------------------------------------------------- зум
+
+              /** Возможен ли плавный цифровой зум в видео (через драйвер). */
+              private boolean videoDigitalZoom() {
+                  if (front) return true;
+                  if (backLogicalId == null) return true;
+                  return backPhysCropOk;
+              }
+
+              private void snapZoomForVideo() {
+                  if (hasTele() && zoom >= (1f + teleRatio) / 2f) zoom = teleRatio;
+                  else zoom = 1f;
+              }
+
+              private float maxZoom() {
+                  if (front) return MAX_ZOOM_FRONT;
+                  return hasTele() ? MAX_ZOOM_TELE : MAX_ZOOM_NO_TELE;
+              }
+
+              private int moduleFor(float z) {
+                  return (hasTele() && z >= teleRatio - 0.001f) ? MOD_TELE : MOD_MAIN;
+              }
+
+              /** Цифровая обрезка внутри текущего модуля. */
+              private float cropFactor() {
+                  float z = zoom;
+                  if (!front && uiModule == MOD_TELE) z = z / teleRatio;
+                  return Math.max(1f, z);
+              }
+
+              private void stepZoom(boolean up) {
+                  if (mode == MODE_VIDEO && !videoDigitalZoom()) {
+                      setZoom(up ? teleRatio : 1f);
+                      return;
+                  }
+                  float z = Math.round((zoom + (up ? ZOOM_STEP : -ZOOM_STEP)) * 10f) / 10f;
+                  setZoom(z);
+              }
+
+              private void setZoom(float z) {
+                  if (Float.isNaN(z)) return;
+                  z = Math.max(1f, Math.min(maxZoom(), z));
+                  if (recordingUi) {
+                      if (!videoDigitalZoom()) return;
+                      // во время записи модуль переключать нельзя — ограничиваем зум текущим модулем
+                      if (!front && hasTele()) {
+                          if (uiModule == MOD_MAIN) z = Math.min(z, teleRatio - 0.01f);
+                          else z = Math.max(z, teleRatio);
+                      }
+                  }
+                  zoom = z;
+                  zoomLabel.setText(String.format(Locale.US, "%.1fx", z));
+                  updateZoomSlider();
+                  int need = moduleFor(z);
+                  if (!recordingUi && need != uiModule) {
+                      uiModule = need;
+                      reconfigure();
+                  } else {
+                      applyPreviewTransform();
+                      if (mode == MODE_VIDEO) pushRepeating();
+                  }
+              }
+
+              private void updateZoomSlider() {
+                  if (zoomSlider == null) return;
+                  float max = maxZoom();
+                  float lm = (float) Math.log(max);
+                  List<Float> marks = new ArrayList<>();
+                  List<String> labels = new ArrayList<>();
+                  marks.add(0f);
+                  labels.add("1x");
+                  if (hasTele()) {
+                      marks.add((float) Math.log(teleRatio) / lm);
+                      labels.add(fmtZoom(teleRatio));
+                      if (max > 6f) {
+                          marks.add((float) Math.log(5f) / lm);
+                          labels.add("5x");
+                      }
+                  } else if (max >= 2f) {
+                      marks.add((float) Math.log(2f) / lm);
+                      labels.add("2x");
+                  }
+                  marks.add(1f);
+                  labels.add(fmtZoom(max));
+                  float[] mk = new float[marks.size()];
+                  for (int i = 0; i < mk.length; i++) mk[i] = marks.get(i);
+                  zoomSlider.setMarks(mk, labels.toArray(new String[0]));
+                  zoomSlider.setValue((float) Math.log(Math.max(1f, zoom)) / lm, String.format(Locale.US, "%.1fx", zoom));
+              }
+
+              /** Смена сессии: прячем превью, пока не пойдут кадры нового режима (без рывков и растяжения). */
+              private void reconfigure() {
+                  reconfiguring = true;
+                  hidePreview();
+                  cam.post(this::configureSession);
+              }
+
+              private void hidePreview() {
+                  tv.animate().cancel();
+                  tv.setAlpha(0f);
+                  ui.removeCallbacks(showPreviewSafety);
+                  ui.postDelayed(showPreviewSafety, 2500);
+              }
+
+              /** Поток UI: вызывается, когда пошли кадры новой сессии. */
+              private void showPreview() {
+                  ui.removeCallbacks(showPreviewSafety);
+                  applyPreviewTransform();
+                  tv.animate().alpha(1f).setDuration(150).start();
+              }
+
+              private final Runnable showPreviewSafety = () -> {
+                  applyPreviewTransform();
+                  tv.setAlpha(1f);
+              };
+
+              /**
+               * Масштаб превью. TextureView растягивает кадр камеры на всё окно, поэтому:
+               * 1) подгоняем пропорции кадра под окно (обрезая лишнее, а не растягивая);
+               * 2) добавляем наш цифровой зум (фото и сканер; в видео зум делает драйвер).
+               */
+              private void applyPreviewTransform() {
+                  if (tv == null || tv.getWidth() == 0 || tv.getHeight() == 0) return;
+                  float rv = (float) tv.getHeight() / tv.getWidth(); // окно (портрет)
+                  float rb = bufAspect;                               // кадр (длинная/короткая)
+                  float sx = 1f, sy = 1f;
+                  if (rv > rb) sx = rv / rb;
+                  else if (rv < rb) sy = rb / rv;
+                  float c = mode == MODE_VIDEO ? 1f : cropFactor();
+                  Matrix m = new Matrix();
+                  m.setScale(sx * c, sy * c, tv.getWidth() / 2f, tv.getHeight() / 2f);
+                  tv.setTransform(m);
+                  tv.invalidate();
+              }
+
+              @Override
+              public boolean onKeyDown(int keyCode, KeyEvent event) {
+                  if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                      if (!(mode == MODE_SCAN && scanPanel.getVisibility() == View.VISIBLE)) {
+                          stepZoom(keyCode == KeyEvent.KEYCODE_VOLUME_UP);
+                      }
+                      return true;
+                  }
+                  return super.onKeyDown(keyCode, event);
+              }
+
+              @Override
+              public boolean onKeyUp(int keyCode, KeyEvent event) {
+                  if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) return true;
+                  return super.onKeyUp(keyCode, event);
+              }
+
+              // ---------------------------------------------------- фокус касанием
+
+              private void onTapFocus(float x, float y) {
+                  CameraCharacteristics c = devChars;
+                  if (c == null || mode == MODE_SCAN && scanPanel.getVisibility() == View.VISIBLE) return;
+                  Integer maxAf = c.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF);
+                  Integer maxAe = c.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE);
+                  if ((maxAf == null || maxAf == 0) && (maxAe == null || maxAe == 0)) return;
+                  Rect arr = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+                  Integer soI = c.get(CameraCharacteristics.SENSOR_ORIENTATION);
+                  if (arr == null) return;
+                  int so = soI == null ? 90 : soI;
+
+                  float u = x / tv.getWidth(), v = y / tv.getHeight();
+                  float crop = (mode == MODE_VIDEO) ? (videoDigitalZoom() ? cropFactor() : 1f) : cropFactor();
+                  u = 0.5f + (u - 0.5f) / crop;
+                  v = 0.5f + (v - 0.5f) / crop;
+                  if (!front && uiModule == MOD_TELE) {
+                      u = 0.5f + (u - 0.5f) / teleRatio;
+                      v = 0.5f + (v - 0.5f) / teleRatio;
+                  }
+                  if (front) u = 1f - u;
+                  float sx, sy;
+                  switch (so) {
+                      case 90: sx = v; sy = 1f - u; break;
+                      case 270: sx = 1f - v; sy = u; break;
+                      case 180: sx = 1f - u; sy = 1f - v; break;
+                      default: sx = u; sy = v; break;
+                  }
+                  int cx = (int) (sx * arr.width()), cy = (int) (sy * arr.height());
+                  int half = Math.max(50, arr.width() / 16);
+                  Rect r = new Rect(Math.max(0, cx - half), Math.max(0, cy - half),
+                          Math.min(arr.width() - 1, cx + half), Math.min(arr.height() - 1, cy + half));
+                  final MeteringRectangle mr = new MeteringRectangle(r, MeteringRectangle.METERING_WEIGHT_MAX - 1);
+
+                  ring.show(x + tv.getLeft(), y + tv.getTop());
+                  cam.post(() -> {
+                      if (session == null || captureState != ST_PREVIEW) return;
+                      focusRegions = new MeteringRectangle[]{mr};
+                      startRepeating();
+                      try {
+                          CaptureRequest.Builder b = buildRequest(previewTemplate(), recording);
+                          if (hasAf()) b.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START);
+                          session.capture(b.build(), null, cam);
+                      } catch (Exception e) {
+                          log("фокус: " + e);
+                      }
+                      cam.removeCallbacks(clearFocus);
+                      cam.postDelayed(clearFocus, 5000);
+                  });
+              }
+
+              private final Runnable clearFocus = new Runnable() {
+                  @Override
+                  public void run() {
+                      if (session == null || captureState != ST_PREVIEW) return;
+                      focusRegions = null;
+                      try {
+                          CaptureRequest.Builder b = buildRequest(previewTemplate(), recording);
+                          if (hasAf()) b.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
+                          session.capture(b.build(), null, cam);
+                      } catch (Exception ignored) { }
+                      startRepeating();
+                  }
+              };
+
+              // =====================================================================
+              //                        ОТКРЫТИЕ И НАСТРОЙКА КАМЕРЫ
+              // =====================================================================
+
+              private String desiredDeviceId() {
+                  if (front) return frontId;
+                  return backLogicalId != null ? backLogicalId : backPlainId;
+              }
+
+              private void openCamera() {
+                  if (paused || !hasPerm(Manifest.permission.CAMERA)) return;
+                  if (!tv.isAvailable()) {
+                      pendingOpen = true;
+                      return;
+                  }
+                  final String id = desiredDeviceId();
+                  if (id == null) {
+                      infoText.setText("Камера не найдена");
+                      infoText.setVisibility(View.VISIBLE);
+                      return;
+                  }
+                  reconfiguring = true;
+                  hidePreview();
+                  layoutPreview();
+                  cam.post(() -> {
+                      retries = 0;
+                      openOnCam(id);
+                  });
+              }
+
+              /** Поток cam. */
+              private void openOnCam(String id) {
+                  closeAllOnCam();
+                  if (paused) return;
+                  final int g = ++gen;
+                  try {
+                      devChars = cm.getCameraCharacteristics(id);
+                      ui.post(() -> {
+                          updateEvRange();
+                          updateUi();
+                      });
+                      cm.openCamera(id, camExec, new CameraDevice.StateCallback() {
+                          @Override
+                          public void onOpened(CameraDevice d) {
+                              if (g != gen || paused) {
+                                  d.close();
+                                  return;
+                              }
+                              device = d;
+                              deviceId = id;
+                              log("Камера " + id + " открыта");
+                              configureSession();
+                          }
+
+                          @Override
+                          public void onDisconnected(CameraDevice d) {
+                              log("Камера " + id + " отключена системой");
+                              d.close();
+                              if (device == d) device = null;
+                              if (g == gen) scheduleRetry();
+                          }
+
+                          @Override
+                          public void onError(CameraDevice d, int error) {
+                              log("Ошибка камеры " + id + ": код " + error);
+                              d.close();
+                              if (device == d) device = null;
+                              if (g == gen) scheduleRetry();
+                          }
+                      });
+                  } catch (Exception e) {
+                      log("Не открылась камера " + id + ": " + e);
+                      scheduleRetry();
+                  }
+              }
+
+              /** Поток cam. После сбоя камерный сервис перезапускается пару секунд — пробуем снова. */
+              private void scheduleRetry() {
+                  if (paused) return;
+                  if (recording) stopRecording();
+                  if (retries++ < 6) {
+                      final int g = gen;
+                      cam.postDelayed(() -> {
+                          if (!paused && g == gen) openOnCam(desiredDeviceId());
+                      }, 1500);
+                  } else {
+                      toast("Камера не отвечает. Закройте и откройте CamFix заново.");
+                      ui.post(() -> reconfiguring = false);
+                  }
+              }
+
+              /** Поток cam. */
+              private void closeSessionOnCam() {
+                  sgen++;
+                  cam.removeCallbacks(captureTimeout);
+                  cam.removeCallbacks(clearFocus);
+                  if (recording) stopRecording();
+                  try { if (session != null) session.close(); } catch (Exception ignored) { }
+                  session = null;
+                  try { if (jpegReader != null) jpegReader.close(); } catch (Exception ignored) { }
+                  jpegReader = null;
+                  try { if (yuvReader != null) yuvReader.close(); } catch (Exception ignored) { }
+                  yuvReader = null;
+                  try { if (recSurface != null) recSurface.release(); } catch (Exception ignored) { }
+                  recSurface = null;
+                  try { if (previewSurface != null) previewSurface.release(); } catch (Exception ignored) { }
+                  previewSurface = null;
+                  captureState = ST_PREVIEW;
+                  pendingJobs.clear();
+                  focusRegions = null;
+                  scanBusy = false;
+              }
+
+              /** Поток cam. */
+              private void closeAllOnCam() {
+                  closeSessionOnCam();
+                  gen++;
+                  try { if (device != null) device.close(); } catch (Exception ignored) { }
+                  device = null;
+                  deviceId = null;
+              }
+
+              private static Size pickSize(Size[] sizes, int aw, int ah, int maxW) {
+                  if (sizes == null || sizes.length == 0) return null;
+                  Size best = null;
+                  for (Size s : sizes) {
+                      if (s.getWidth() * ah == s.getHeight() * aw && s.getWidth() <= maxW) {
+                          if (best == null || s.getWidth() > best.getWidth()) best = s;
+                      }
+                  }
+                  if (best == null) {
+                      for (Size s : sizes) {
+                          if (s.getWidth() <= maxW && (best == null || s.getWidth() > best.getWidth())) best = s;
+                      }
+                  }
+                  return best != null ? best : sizes[sizes.length - 1];
+              }
+
+              private static Size largest(Size[] sizes) {
+                  if (sizes == null || sizes.length == 0) return null;
+                  Size best = sizes[0];
+                  for (Size s : sizes) {
+                      if ((long) s.getWidth() * s.getHeight() > (long) best.getWidth() * best.getHeight()) best = s;
+                  }
+                  return best;
+              }
+
+              private static boolean contains(Size[] sizes, int w, int h) {
+                  if (sizes == null) return false;
+                  for (Size s : sizes) if (s.getWidth() == w && s.getHeight() == h) return true;
+                  return false;
+              }
+
+              private Size chooseVideoSize(StreamConfigurationMap map) {
+                  Size[] vs = map.getOutputSizes(MediaRecorder.class);
+                  if ("2160".equals(videoRes) && contains(vs, 3840, 2160)) return new Size(3840, 2160);
+                  if ("2160".equals(videoRes)) toast("4K недоступно на этом модуле — запись 1080p");
+                  if (contains(vs, 1920, 1080)) return new Size(1920, 1080);
+                  Size s = pickSize(vs, 16, 9, 1920);
+                  return s != null ? s : new Size(1280, 720);
+              }
+
+              private int chooseFps(StreamConfigurationMap map) {
+                  if (videoFps != 60) return 30;
+                  boolean has = false;
+                  Range<Integer>[] rs = devChars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+                  if (rs != null) for (Range<Integer> r : rs) if (r.getLower() == 60 && r.getUpper() == 60) has = true;
+                  long d1 = 0, d2 = 0;
+                  try {
+                      d1 = map.getOutputMinFrameDuration(MediaRecorder.class, videoSize);
+                      d2 = map.getOutputMinFrameDuration(SurfaceTexture.class, previewSize);
+                  } catch (Exception e) {
+                      has = false;
+                  }
+                  if (has && d1 <= 16_700_000L && d2 <= 16_700_000L) return 60;
+                  toast("60 кадров/с недоступно здесь — запись 30");
+                  return 30;
+              }
+
+              private int videoBitrate() {
+                  boolean uhd = videoSize != null && videoSize.getWidth() >= 3840;
+                  int base = uhd ? 48_000_000 : 17_000_000;
+                  return fpsUsed == 60 ? base * 3 / 2 : base;
+              }
+
+              private MediaRecorder newRecorder(boolean audio) {
+                  MediaRecorder r = Build.VERSION.SDK_INT >= 31 ? new MediaRecorder(this) : new MediaRecorder();
+                  if (audio) r.setAudioSource(MediaRecorder.AudioSource.CAMCORDER);
+                  r.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+                  r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+                  r.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+                  r.setVideoSize(videoSize.getWidth(), videoSize.getHeight());
+                  r.setVideoFrameRate(fpsUsed);
+                  r.setVideoEncodingBitRate(videoBitrate());
+                  if (audio) {
+                      r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+                      r.setAudioEncodingBitRate(192_000);
+                      r.setAudioSamplingRate(48_000);
+                      r.setAudioChannels(2);
+                  }
+                  r.setInputSurface(recSurface);
+                  return r;
+              }
+
+              /** Поток cam. Создаёт сессию под текущий режим и модуль. */
+              private void configureSession() {
+                  if (device == null || paused) {
+                      ui.post(() -> reconfiguring = false);
+                      return;
+                  }
+                  closeSessionOnCam();
+                  final int sg = ++sgen;
+                  final int m = mode;
+                  try {
+                      if (!front && backLogicalId != null && backLogicalId.equals(deviceId)) {
+                          int mod = uiModule;
+                          streamPhys = (mod == MOD_TELE && telePhysId != null) ? telePhysId : mainPhysId;
+                      } else {
+                          streamPhys = null;
+                      }
+                      CameraCharacteristics sc = streamPhys != null ? cm.getCameraCharacteristics(streamPhys) : devChars;
+                      streamChars = sc;
+                      StreamConfigurationMap map = sc.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                      if (map == null) map = devChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                      if (map == null) {
+                          log("Нет списка разрешений");
+                          ui.post(() -> reconfiguring = false);
+                          return;
+                      }
+
+                      boolean wide = m == MODE_VIDEO;
+                      previewSize = wide ? pickSize(map.getOutputSizes(SurfaceTexture.class), 16, 9, 1920)
+                              : pickSize(map.getOutputSizes(SurfaceTexture.class), 4, 3, 1920);
+                      SurfaceTexture st = tv.getSurfaceTexture();
+                      if (st == null || previewSize == null) {
+                          ui.post(() -> {
+                              reconfiguring = false;
+                              pendingOpen = true;
+                          });
+                          return;
+                      }
+                      st.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
+                      previewSurface = new Surface(st);
+                      bufAspect = (float) Math.max(previewSize.getWidth(), previewSize.getHeight())
+                              / Math.min(previewSize.getWidth(), previewSize.getHeight());
+
+                      List<OutputConfiguration> outs = new ArrayList<>();
+                      outs.add(new OutputConfiguration(previewSurface));
+                      String info;
+                      if (m == MODE_PHOTO) {
+                          Size j = largest(map.getOutputSizes(ImageFormat.JPEG));
+                          jpegReader = ImageReader.newInstance(j.getWidth(), j.getHeight(), ImageFormat.JPEG, 3);
+                          jpegReader.setOnImageAvailableListener(this::onJpeg, cam);
+                          outs.add(new OutputConfiguration(jpegReader.getSurface()));
+                          info = "фото " + j;
+                      } else if (m == MODE_VIDEO) {
+                          videoSize = chooseVideoSize(map);
+                          fpsUsed = chooseFps(map);
+                          recSurface = MediaCodec.createPersistentInputSurface();
+                          File dummy = new File(getCacheDir(), "warmup.mp4");
+                          MediaRecorder r = newRecorder(false);
+                          r.setOutputFile(dummy);
+                          r.prepare();
+                          r.release();
+                          //noinspection ResultOfMethodCallIgnored
+                          dummy.delete();
+                          outs.add(new OutputConfiguration(recSurface));
+                          info = "видео " + videoSize + " " + fpsUsed + " к/с";
+                          if (videoSnapshotOk && intentMode < 0) {
+                              // поток для снимков во время записи (16:9, как видео)
+                              Size j = pickSize(map.getOutputSizes(ImageFormat.JPEG), 16, 9, 4096);
+                              if (j != null) {
+                                  jpegReader = ImageReader.newInstance(j.getWidth(), j.getHeight(), ImageFormat.JPEG, 2);
+                                  jpegReader.setOnImageAvailableListener(this::onJpeg, cam);
+                                  outs.add(new OutputConfiguration(jpegReader.getSurface()));
+                                  info += ", снимок " + j;
+                              }
+                          }
+                      } else {
+                          Size y = pickSize(map.getOutputSizes(ImageFormat.YUV_420_888), 4, 3, 1280);
+                          yuvReader = ImageReader.newInstance(y.getWidth(), y.getHeight(), ImageFormat.YUV_420_888, 2);
+                          yuvReader.setOnImageAvailableListener(this::onYuv, cam);
+                          outs.add(new OutputConfiguration(yuvReader.getSurface()));
+                          info = "сканер " + y;
+                      }
+                      if (streamPhys != null) {
+                          for (OutputConfiguration o : outs) o.setPhysicalCameraId(streamPhys);
+                      }
+                      log("Сессия: модуль " + (streamPhys != null ? streamPhys : deviceId) + ", превью " + previewSize + ", " + info);
+
+                      SessionConfiguration cfg = new SessionConfiguration(SessionConfiguration.SESSION_REGULAR, outs, camExec,
+                              new CameraCaptureSession.StateCallback() {
+                                  @Override
+                                  public void onConfigured(CameraCaptureSession s) {
+                                      if (sg != sgen || paused) {
+                                          s.close();
+                                          return;
+                                      }
+                                      session = s;
+                                      gotFrame = false;
+                                      startRepeating();
+                                      ui.post(() -> {
+                                          reconfiguring = false;
+                                          applyPreviewTransform();
+                                          updateUi();
+                                          if (moduleFor(zoom) != uiModule && !recordingUi) {
+                                              uiModule = moduleFor(zoom);
+                                              reconfigure();
+                                          }
+                                      });
+                                  }
+
+                                  @Override
+                                  public void onConfigureFailed(CameraCaptureSession s) {
+                                      if (sg != sgen) return;
+                                      log("Сессия не настроилась");
+                                      if (m == MODE_VIDEO && jpegReader != null && videoSnapshotOk) {
+                                          videoSnapshotOk = false;
+                                          log("Снимки во время видео отключены (драйвер не тянет 3 потока)");
+                                          configureSession();
+                                      } else if (m == MODE_VIDEO && fpsUsed == 60) {
+                                          videoFps = 30;
+                                          toast("60 кадров/с не поддерживается — переключаю на 30");
+                                          configureSession();
+                                      } else if (m == MODE_VIDEO && "2160".equals(videoRes)) {
+                                          videoRes = "1080";
+                                          toast("4K не поддерживается — переключаю на 1080p");
+                                          configureSession();
+                                      } else {
+                                          toast("Этот режим не запустился");
+                                          ui.post(() -> reconfiguring = false);
+                                      }
+                                  }
+                              });
+                      if (m == MODE_VIDEO) {
+                          try {
+                              CaptureRequest.Builder p = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+                              p.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(fpsUsed, fpsUsed));
+                              cfg.setSessionParameters(p.build());
+                          } catch (Exception ignored) { }
+                      }
+                      device.createCaptureSession(cfg);
+                  } catch (Exception e) {
+                      log("Ошибка настройки сессии: " + e);
+                      toast("Ошибка камеры, пробую снова");
+                      scheduleRetry();
+                  }
+              }
+
+              private int previewTemplate() {
+                  return mode == MODE_VIDEO ? CameraDevice.TEMPLATE_RECORD : CameraDevice.TEMPLATE_PREVIEW;
+              }
+
+              private boolean hasAf() {
+                  CameraCharacteristics c = devChars;
+                  if (c == null) return false;
+                  int[] af = c.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+                  if (af == null) return false;
+                  for (int x : af) if (x != CameraMetadata.CONTROL_AF_MODE_OFF) return true;
+                  return false;
+              }
+
+              private static boolean containsInt(int[] a, int v) {
+                  if (a == null) return false;
+                  for (int x : a) if (x == v) return true;
+                  return false;
+              }
+
+              /** Прямоугольник обрезки (зум) внутри активной области матрицы. */
+              private static Rect cropRect(CameraCharacteristics c, float crop) {
+                  Rect a = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+                  if (a == null) return null;
+                  int w = (int) (a.width() / crop), h = (int) (a.height() / crop);
+                  int l = (a.width() - w) / 2, t = (a.height() - h) / 2;
+                  return new Rect(l, t, l + w, t + h);
+              }
+
+              /** Поток cam. */
+              private CaptureRequest.Builder buildRequest(int template, boolean withRec) throws CameraAccessException {
+                  boolean videoZoom = mode == MODE_VIDEO && videoDigitalZoom();
+                  boolean physKeys = videoZoom && streamPhys != null;
+                  CaptureRequest.Builder b = physKeys
+                          ? device.createCaptureRequest(template, Collections.singleton(streamPhys))
+                          : device.createCaptureRequest(template);
+                  b.addTarget(previewSurface);
+                  if (withRec && recSurface != null) b.addTarget(recSurface);
+                  if (mode == MODE_SCAN && yuvReader != null && !scanPaused) b.addTarget(yuvReader.getSurface());
+                  applyCommon(b);
+                  if (videoZoom && streamChars != null) {
+                      Rect r = cropRect(streamChars, cropFactor());
+                      if (r != null) {
+                          if (physKeys) b.setPhysicalCameraKey(CaptureRequest.SCALER_CROP_REGION, r, streamPhys);
+                          else b.set(CaptureRequest.SCALER_CROP_REGION, r);
+                      }
+                  }
+                  if (mode == MODE_VIDEO) {
+                      b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(fpsUsed, fpsUsed));
+                      int[] stab = devChars.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES);
+                      if (stabilization && containsInt(stab, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON)) {
+                          b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON);
+                      }
+                  }
+                  return b;
+              }
+
+              /** Фокус, экспозиция, вспышка. Зум Samsung (CONTROL_ZOOM_RATIO) НЕ трогаем никогда. */
+              private void applyCommon(CaptureRequest.Builder b) {
+                  CameraCharacteristics c = devChars;
+                  b.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+                  int[] afModes = c.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+                  int want = mode == MODE_VIDEO ? CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO : CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE;
+                  if (containsInt(afModes, want)) b.set(CaptureRequest.CONTROL_AF_MODE, want);
+                  else if (containsInt(afModes, CameraMetadata.CONTROL_AF_MODE_AUTO)) b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO);
+                  if (evMax > evMin) b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, evSteps);
+
+                  if (focusRegions != null) {
+                      Integer maxAf = c.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF);
+                      Integer maxAe = c.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE);
+                      if (maxAf != null && maxAf > 0) b.set(CaptureRequest.CONTROL_AF_REGIONS, focusRegions);
+                      if (maxAe != null && maxAe > 0) b.set(CaptureRequest.CONTROL_AE_REGIONS, focusRegions);
+                  }
+
+                  Boolean fl = c.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
+                  boolean hasFlash = fl != null && fl;
+                  if (mode == MODE_PHOTO) {
+                      int ae = CameraMetadata.CONTROL_AE_MODE_ON;
+                      if (hasFlash && flashMode == FLASH_AUTO) ae = CameraMetadata.CONTROL_AE_MODE_ON_AUTO_FLASH;
+                      if (hasFlash && flashMode == FLASH_ON) ae = CameraMetadata.CONTROL_AE_MODE_ON_ALWAYS_FLASH;
+                      b.set(CaptureRequest.CONTROL_AE_MODE, ae);
+                  } else {
+                      b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON);
+                      b.set(CaptureRequest.FLASH_MODE, hasFlash && flashMode == FLASH_ON
+                              ? CameraMetadata.FLASH_MODE_TORCH : CameraMetadata.FLASH_MODE_OFF);
+                  }
+              }
+
+              /** Поток cam. */
+              private void startRepeating() {
+                  if (session == null || device == null) return;
+                  try {
+                      CaptureRequest.Builder b = buildRequest(previewTemplate(), recording);
+                      session.setRepeatingRequest(b.build(), repeatCb, cam);
+                  } catch (Exception e) {
+                      log("Повтор кадров: " + e);
+                  }
+              }
+
+              private final CameraCaptureSession.CaptureCallback repeatCb = new CameraCaptureSession.CaptureCallback() {
+                  @Override
+                  public void onCaptureProgressed(CameraCaptureSession s, CaptureRequest r, CaptureResult res) {
+                      process(res);
+                  }
+
+                  @Override
+                  public void onCaptureCompleted(CameraCaptureSession s, CaptureRequest r, TotalCaptureResult res) {
+                      if (!gotFrame) {
+                          gotFrame = true;
+                          retries = 0;
+                          String ap = res.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID);
+                          log("Кадры идут" + (ap != null ? ", модуль " + ap : ""));
+                          ui.post(MainActivity.this::showPreview);
+                      }
+                      process(res);
+                  }
+              };
+
+              // =====================================================================
+              //                                 ФОТО
+              // =====================================================================
+
+              private int captureOrientation() {
+                  CameraCharacteristics c = streamChars != null ? streamChars : devChars;
+                  Integer so = c != null ? c.get(CameraCharacteristics.SENSOR_ORIENTATION) : null;
+                  int s = so == null ? 90 : so;
+                  int d = deviceDeg;
+                  if (front) d = -d;
+                  return (s + d + 360) % 360;
+              }
+
+              private void takePhoto() {
+                  final float crop = cropFactor();
+                  final float asp = aspect;
+                  cam.post(() -> {
+                      if (session == null || jpegReader == null || device == null || mode != MODE_PHOTO) return;
+                      if (captureState != ST_PREVIEW) return;
+                      pendingJobs.add(new float[]{crop, asp});
+                      Boolean fl = devChars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
+                      flashUsedInCapture = fl != null && fl && flashMode != FLASH_OFF;
+                      cam.removeCallbacks(clearFocus);
+                      try {
+                          if (hasAf()) {
+                              captureState = ST_WAIT_AF;
+                              CaptureRequest.Builder b = buildRequest(CameraDevice.TEMPLATE_PREVIEW, false);
+                              b.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START);
+                              session.capture(b.build(), repeatCb, cam);
+                          } else if (flashUsedInCapture) {
+                              runPrecapture();
+                          } else {
+                              captureStill();
+                              return;
+                          }
+                          cam.postDelayed(captureTimeout, 2500);
+                      } catch (Exception e) {
+                          log("Съёмка: " + e);
+                          captureStill();
+                      }
+                  });
+              }
+
+              private final Runnable captureTimeout = () -> {
+                  if (captureState == ST_WAIT_AF || captureState == ST_WAIT_PRE || captureState == ST_WAIT_NONPRE) {
+                      log("Фокус/экспозиция не успели — снимаю как есть");
+                      captureStill();
+                  }
+              };
+
+              private void runPrecapture() throws CameraAccessException {
+                  captureState = ST_WAIT_PRE;
+                  CaptureRequest.Builder b = buildRequest(CameraDevice.TEMPLATE_PREVIEW, false);
+                  b.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_START);
+                  session.capture(b.build(), repeatCb, cam);
+              }
+
+              /** Поток cam: машина состояний фокуса/экспозиции перед снимком. */
+              private void process(CaptureResult res) {
+                  switch (captureState) {
+                      case ST_WAIT_AF: {
+                          Integer af = res.get(CaptureResult.CONTROL_AF_STATE);
+                          boolean locked = af == null
+                                  || af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED
+                                  || af == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED
+                                  || af == CaptureResult.CONTROL_AF_STATE_INACTIVE;
+                          if (!locked) return;
+                          if (flashUsedInCapture) {
+                              try {
+                                  runPrecapture();
+                              } catch (Exception e) {
+                                  captureStill();
+                              }
+                          } else {
+                              captureStill();
+                          }
+                          break;
+                      }
+                      case ST_WAIT_PRE: {
+                          Integer ae = res.get(CaptureResult.CONTROL_AE_STATE);
+                          if (ae == null || ae == CaptureResult.CONTROL_AE_STATE_PRECAPTURE
+                                  || ae == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED
+                                  || ae == CaptureResult.CONTROL_AE_STATE_CONVERGED) {
+                              captureState = ST_WAIT_NONPRE;
+                          }
+                          break;
+                      }
+                      case ST_WAIT_NONPRE: {
+                          Integer ae = res.get(CaptureResult.CONTROL_AE_STATE);
+                          if (ae == null || ae != CaptureResult.CONTROL_AE_STATE_PRECAPTURE) captureStill();
+                          break;
+                      }
+                      default:
+                          break;
+                  }
+              }
+
+              /** Поток cam. */
+              private void captureStill() {
+                  if (session == null || jpegReader == null || device == null) {
+                      captureState = ST_PREVIEW;
+                      pendingJobs.clear();
+                      return;
+                  }
+                  captureState = ST_TAKEN;
+                  cam.removeCallbacks(captureTimeout);
+                  try {
+                      CaptureRequest.Builder b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+                      b.addTarget(jpegReader.getSurface());
+                      applyCommon(b);
+                      b.set(CaptureRequest.JPEG_ORIENTATION, captureOrientation());
+                      b.set(CaptureRequest.JPEG_QUALITY, (byte) 95);
+                      session.capture(b.build(), new CameraCaptureSession.CaptureCallback() {
+                          @Override
+                          public void onCaptureStarted(CameraCaptureSession s, CaptureRequest r, long ts, long fn) {
+                              if (sound != null && soundOn) sound.play(MediaActionSound.SHUTTER_CLICK);
+                          }
+
+                          @Override
+                          public void onCaptureCompleted(CameraCaptureSession s, CaptureRequest r, TotalCaptureResult res) {
+                              unlockAfterCapture();
+                          }
+
+                          @Override
+                          public void onCaptureFailed(CameraCaptureSession s, CaptureRequest r, CaptureFailure f) {
+                              log("Снимок не удался, причина " + f.getReason());
+                              pendingJobs.pollFirst();
+                              toast("Снимок не удался");
+                              unlockAfterCapture();
+                          }
+                      }, cam);
+                  } catch (Exception e) {
+                      log("Снимок: " + e);
+                      pendingJobs.pollFirst();
+                      toast("Снимок не удался");
+                      unlockAfterCapture();
+                  }
+              }
+
+              /** Поток cam. */
+              private void unlockAfterCapture() {
+                  try {
+                      if (session != null && device != null) {
+                          CaptureRequest.Builder b = buildRequest(CameraDevice.TEMPLATE_PREVIEW, false);
+                          if (hasAf()) b.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
+                          if (flashUsedInCapture) b.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_CANCEL);
+                          session.capture(b.build(), null, cam);
+                      }
+                  } catch (Exception ignored) { }
+                  captureState = ST_PREVIEW;
+                  focusRegions = null;
+                  startRepeating();
+              }
+
+              /** Поток cam. */
+              private void onJpeg(ImageReader r) {
+                  byte[] data;
+                  try (Image img = r.acquireNextImage()) {
+                      if (img == null) return;
+                      ByteBuffer buf = img.getPlanes()[0].getBuffer();
+                      data = new byte[buf.remaining()];
+                      buf.get(data);
+                  } catch (Exception e) {
+                      log("Чтение снимка: " + e);
+                      return;
+                  }
+                  float[] job = pendingJobs.pollFirst();
+                  final float crop = job == null ? 1f : job[0];
+                  final int asp = job == null ? ASPECT_4_3 : (int) job[1];
+                  final byte[] bytes = data;
+                  saver.execute(() -> processPhoto(bytes, crop, asp));
+              }
+
+              private static int exifDegrees(byte[] jpeg) {
+                  try {
+                      ExifInterface ex = new ExifInterface(new ByteArrayInputStream(jpeg));
+                      int o = ex.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+                      switch (o) {
+                          case ExifInterface.ORIENTATION_ROTATE_90: return 90;
+                          case ExifInterface.ORIENTATION_ROTATE_180: return 180;
+                          case ExifInterface.ORIENTATION_ROTATE_270: return 270;
+                          default: return 0;
+                      }
+                  } catch (Exception e) {
+                      return 0;
+                  }
+              }
+
+              /**
+               * Цифровой зум и пропорции для фото: вырезаем центр кадра.
+               * Пропорции считаем по длинной/короткой стороне, поэтому они верны и для вертикальных,
+               * и для горизонтальных снимков. Поворот по EXIF переносим в сами пиксели.
+               */
+              @SuppressWarnings("deprecation")
+              private static byte[] cropJpeg(byte[] data, float crop, int aspect) throws Exception {
+                  BitmapFactory.Options o = new BitmapFactory.Options();
+                  o.inJustDecodeBounds = true;
+                  BitmapFactory.decodeByteArray(data, 0, data.length, o);
+                  int w = o.outWidth, h = o.outHeight;
+                  float aw = w, ah = h;
+                  float longS = Math.max(aw, ah), shortS = Math.min(aw, ah);
+                  float have = longS / shortS;
+                  float want = aspect == ASPECT_16_9 ? 16f / 9f : aspect == ASPECT_1_1 ? 1f
+                          : aspect == ASPECT_4_3 ? 4f / 3f : have; // -1: пропорции не трогаем
+                  if (want > have + 0.01f) shortS = longS / want;      // 16:9 из 4:3 — режем короткую сторону
+                  else if (want < have - 0.01f) longS = shortS * want; // 1:1 из 4:3 — режем длинную сторону
+                  if (w >= h) { aw = longS; ah = shortS; } else { aw = shortS; ah = longS; }
+                  int cw = Math.max(16, Math.min(w, Math.round(aw / crop)));
+                  int ch = Math.max(16, Math.min(h, Math.round(ah / crop)));
+                  int l = (w - cw) / 2, t = (h - ch) / 2;
+                  BitmapRegionDecoder dec = BitmapRegionDecoder.newInstance(data, 0, data.length, false);
+                  Bitmap bm = dec.decodeRegion(new Rect(l, t, l + cw, t + ch), null);
+                  dec.recycle();
+                  int deg = exifDegrees(data);
+                  if (deg != 0) {
+                      Matrix m = new Matrix();
+                      m.postRotate(deg);
+                      Bitmap rot = Bitmap.createBitmap(bm, 0, 0, bm.getWidth(), bm.getHeight(), m, true);
+                      if (rot != bm) bm.recycle();
+                      bm = rot;
+                  }
+                  ByteArrayOutputStream out = new ByteArrayOutputStream();
+                  bm.compress(Bitmap.CompressFormat.JPEG, 95, out);
+                  bm.recycle();
+                  return out.toByteArray();
+              }
+
+              /** Поток saver. */
+              private void processPhoto(byte[] data, float crop, int asp) {
+                  byte[] out = data;
+                  if (crop > 1.01f || (asp == ASPECT_16_9 || asp == ASPECT_1_1)) {
+                      try {
+                          out = cropJpeg(data, crop, asp);
+                      } catch (Throwable e) {
+                          log("Обрезка зума не удалась, сохраняю полный кадр: " + e);
+                          out = data;
+                      }
+                  }
+                  if (intentMode == MODE_PHOTO) {
+                      deliverIntentPhoto(out);
+                      return;
+                  }
+                  try {
+                      String name = "CamFix_" + new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date()) + ".jpg";
+                      ContentValues v = new ContentValues();
+                      v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
+                      v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+                      v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/CamFix");
+                      v.put(MediaStore.Images.Media.IS_PENDING, 1);
+                      Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+                      if (uri == null) throw new IllegalStateException("галерея не приняла файл");
+                      try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+                          if (os == null) throw new IllegalStateException("файл не открылся");
+                          os.write(out);
+                      }
+                      v.clear();
+                      v.put(MediaStore.Images.Media.IS_PENDING, 0);
+                      getContentResolver().update(uri, v, null, null);
+                      lastUri = uri;
+                      lastMime = "image/jpeg";
+                      log("Фото сохранено: " + name + " (" + out.length / 1024 + " КБ)");
+                      loadThumb(uri);
+                  } catch (Exception e) {
+                      log("Сохранение: " + e);
+                      toast("Не удалось сохранить фото");
+                  }
+              }
+
+              /** Поток saver: вернуть фото приложению, которое попросило снимок. */
+              private void deliverIntentPhoto(byte[] jpeg) {
+                  try {
+                      if (intentOutput != null) {
+                          try (OutputStream os = getContentResolver().openOutputStream(intentOutput, "w")) {
+                              if (os == null) throw new IllegalStateException("нет доступа к файлу");
+                              os.write(jpeg);
+                          }
+                          ui.post(() -> {
+                              setResult(RESULT_OK);
+                              finish();
+                          });
+                      } else {
+                          BitmapFactory.Options o = new BitmapFactory.Options();
+                          o.inSampleSize = 8;
+                          Bitmap bm = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length, o);
+                          int deg = exifDegrees(jpeg);
+                          if (deg != 0 && bm != null) {
+                              Matrix m = new Matrix();
+                              m.postRotate(deg);
+                              bm = Bitmap.createBitmap(bm, 0, 0, bm.getWidth(), bm.getHeight(), m, true);
+                          }
+                          Intent d = new Intent("inline-data");
+                          d.putExtra("data", bm);
+                          ui.post(() -> {
+                              setResult(RESULT_OK, d);
+                              finish();
+                          });
+                      }
+                  } catch (Exception e) {
+                      log("Передача фото: " + e);
+                      ui.post(() -> {
+                          setResult(RESULT_CANCELED);
+                          finish();
+                      });
+                  }
+              }
+
+              // =====================================================================
+              //                                 ВИДЕО
+              // =====================================================================
+
+              /** Поток cam. */
+              private void startRecording() {
+                  if (session == null || recSurface == null || device == null || recording) return;
+                  boolean audio = hasPerm(Manifest.permission.RECORD_AUDIO);
+                  recUri = null;
+                  recInMediaStore = false;
+                  recPfd = null;
+                  try {
+                      recorder = newRecorder(audio);
+                      if (intentMode == MODE_VIDEO && intentOutput != null) {
+                          recUri = intentOutput;
+                          recInMediaStore = false;
+                          recPfd = getContentResolver().openFileDescriptor(intentOutput, "rw");
+                      } else {
+                          String name = "CamFix_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".mp4";
+                          ContentValues v = new ContentValues();
+                          v.put(MediaStore.Video.Media.DISPLAY_NAME, name);
+                          v.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
+                          v.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/CamFix");
+                          v.put(MediaStore.Video.Media.IS_PENDING, 1);
+                          recUri = getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v);
+                          if (recUri == null) throw new IllegalStateException("галерея не приняла файл");
+                          recInMediaStore = true;
+                          recPfd = getContentResolver().openFileDescriptor(recUri, "w");
+                      }
+                      if (recPfd == null) throw new IllegalStateException("файл не открылся");
+                      recorder.setOutputFile(recPfd.getFileDescriptor());
+                      recorder.setOrientationHint(captureOrientation());
+                      recorder.prepare();
+                      recording = true;
+                      startRepeating();
+                      recorder.start();
+                      recStart = SystemClock.elapsedRealtime();
+                      if (sound != null && soundOn) sound.play(MediaActionSound.START_VIDEO_RECORDING);
+                      log("Запись начата: " + videoSize + " " + fpsUsed + " к/с" + (audio ? "" : " (без звука)"));
+                      ui.post(() -> {
+                          recordingUi = true;
+                          updateUi();
+                          ui.post(recTick);
+                      });
+                  } catch (Exception e) {
+                      log("Запись не началась: " + e);
+                      toast("Не удалось начать запись");
+                      recording = false;
+                      try { if (recorder != null) recorder.release(); } catch (Exception ignored) { }
+                      recorder = null;
+                      closeRecFile(false);
+                      startRepeating();
+                  }
+              }
+
+              /** Поток cam. */
+              private void stopRecording() {
+                  if (!recording) return;
+                  recording = false;
+                  startRepeating(); // только превью
+                  boolean ok = true;
+                  try {
+                      recorder.stop();
+                  } catch (Exception e) {
+                      ok = false;
+                      log("Запись слишком короткая или с ошибкой: " + e);
+                  }
+                  try { recorder.release(); } catch (Exception ignored) { }
+                  recorder = null;
+                  if (sound != null && soundOn) sound.play(MediaActionSound.STOP_VIDEO_RECORDING);
+                  final Uri u = recUri;
+                  closeRecFile(ok);
+                  ui.post(() -> {
+                      recordingUi = false;
+                      ui.removeCallbacks(recTick);
+                      updateUi();
+                  });
+                  if (ok) {
+                      log("Видео сохранено");
+                      if (intentMode == MODE_VIDEO) {
+                          ui.post(() -> {
+                              Intent d = new Intent();
+                              d.setData(u);
+                              d.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                              setResult(RESULT_OK, d);
+                              finish();
+                          });
+                      } else {
+                          lastUri = u;
+                          lastMime = "video/mp4";
+                          saver.execute(() -> loadThumb(u));
+                      }
+                  } else {
+                      toast("Видео не сохранилось (слишком короткое?)");
+                  }
+              }
+
+              /** Снимок во время записи видео (кадр того же модуля и зума, 16:9). */
+              private void takeVideoSnapshot() {
+                  cam.post(() -> {
+                      if (!recording || session == null || device == null) return;
+                      if (jpegReader == null) {
+                          toast("Снимок во время записи здесь не поддерживается");
+                          return;
+                      }
+                      try {
+                          CaptureRequest.Builder b = buildRequest(CameraDevice.TEMPLATE_VIDEO_SNAPSHOT, true);
+                          b.addTarget(jpegReader.getSurface());
+                          b.set(CaptureRequest.JPEG_ORIENTATION, captureOrientation());
+                          b.set(CaptureRequest.JPEG_QUALITY, (byte) 95);
+                          pendingJobs.add(new float[]{1f, -1f});
+                          session.capture(b.build(), new CameraCaptureSession.CaptureCallback() {
+                              @Override
+                              public void onCaptureStarted(CameraCaptureSession s, CaptureRequest r, long ts, long fn) {
+                                  if (sound != null && soundOn) sound.play(MediaActionSound.SHUTTER_CLICK);
+                              }
+
+                              @Override
+                              public void onCaptureFailed(CameraCaptureSession s, CaptureRequest r, CaptureFailure f) {
+                                  pendingJobs.pollFirst();
+                                  log("Снимок во время записи не удался, причина " + f.getReason());
+                                  toast("Снимок не удался");
+                              }
+                          }, cam);
+                      } catch (Exception e) {
+                          pendingJobs.pollFirst();
+                          log("Снимок во время записи: " + e);
+                          toast("Снимок не удался");
+                      }
+                  });
+              }
+
+              private void closeRecFile(boolean ok) {
+                  try { if (recPfd != null) recPfd.close(); } catch (Exception ignored) { }
+                  recPfd = null;
+                  if (recUri != null && recInMediaStore) {
+                      try {
+                          if (ok) {
+                              ContentValues v = new ContentValues();
+                              v.put(MediaStore.Video.Media.IS_PENDING, 0);
+                              getContentResolver().update(recUri, v, null, null);
+                          } else {
+                              getContentResolver().delete(recUri, null, null);
+                          }
+                      } catch (Exception e) {
+                          log("Файл видео: " + e);
+                      }
+                  }
+                  if (!ok) recUri = null;
+              }
+
+              private final Runnable recTick = new Runnable() {
+                  @Override
+                  public void run() {
+                      if (!recordingUi) return;
+                      long s = (SystemClock.elapsedRealtime() - recStart) / 1000;
+                      recTimer.setText(String.format(Locale.US, "● %02d:%02d", s / 60, s % 60));
+                      ui.postDelayed(this, 500);
+                  }
+              };
+
+              // =====================================================================
+              //                                СКАНЕР
+              // =====================================================================
+
+              /** Поток cam. */
+              private void onYuv(ImageReader r) {
+                  Image img;
+                  try {
+                      img = r.acquireLatestImage();
+                  } catch (Exception e) {
+                      return;
+                  }
+                  if (img == null) return;
+                  if (scanBusy || scanPaused || barcodeScanner == null || mode != MODE_SCAN) {
+                      img.close();
+                      return;
+                  }
+                  scanBusy = true;
+                  try {
+                      InputImage in = InputImage.fromMediaImage(img, captureOrientation());
+                      barcodeScanner.process(in)
+                              .addOnSuccessListener(list -> {
+                                  if (list != null && !list.isEmpty() && !scanPaused && mode == MODE_SCAN) {
+                                      showScanResult(list.get(0));
+                                  }
+                              })
+                              .addOnCompleteListener(t -> {
+                                  img.close();
+                                  scanBusy = false;
+                              });
+                  } catch (Exception e) {
+                      img.close();
+                      scanBusy = false;
+                  }
+              }
+
+              private static String formatName(int f) {
+                  switch (f) {
+                      case Barcode.FORMAT_QR_CODE: return "QR-код";
+                      case Barcode.FORMAT_EAN_13: return "EAN-13";
+                      case Barcode.FORMAT_EAN_8: return "EAN-8";
+                      case Barcode.FORMAT_UPC_A: return "UPC-A";
+                      case Barcode.FORMAT_UPC_E: return "UPC-E";
+                      case Barcode.FORMAT_CODE_128: return "Code 128";
+                      case Barcode.FORMAT_CODE_39: return "Code 39";
+                      case Barcode.FORMAT_CODE_93: return "Code 93";
+                      case Barcode.FORMAT_DATA_MATRIX: return "DataMatrix";
+                      case Barcode.FORMAT_PDF417: return "PDF417";
+                      case Barcode.FORMAT_AZTEC: return "Aztec";
+                      case Barcode.FORMAT_ITF: return "ITF";
+                      case Barcode.FORMAT_CODABAR: return "Codabar";
+                      default: return "Код";
+                  }
+              }
+
+              /** UI поток. */
+              private void showScanResult(Barcode b) {
+                  scanPaused = true;
+                  String raw = b.getRawValue();
+                  if (raw == null) raw = "";
+                  String url = null;
+                  if (b.getValueType() == Barcode.TYPE_URL && b.getUrl() != null) url = b.getUrl().getUrl();
+                  if (url == null && (raw.startsWith("http://") || raw.startsWith("https://"))) url = raw;
+                  scanIsUrl = url != null;
+                  scanValue = scanIsUrl ? url : raw;
+                  scanText.setText(formatName(b.getFormat()) + ":\n" + raw);
+                  scanOpen.setVisibility(scanIsUrl ? View.VISIBLE : View.GONE);
+                  scanPanel.setVisibility(View.VISIBLE);
+                  root.performHapticFeedback(HapticFeedbackConstants.CONFIRM);
+                  log("Распознано: " + formatName(b.getFormat()));
+              }
+
+              private void openScanned() {
+                  if (!scanIsUrl || scanValue == null) return;
+                  try {
+                      startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(scanValue)));
+                  } catch (ActivityNotFoundException e) {
+                      toast("Нет приложения, чтобы открыть ссылку");
+                  }
+              }
+
+              // =====================================================================
+              //                         МИНИАТЮРА И ГАЛЕРЕЯ
+              // =====================================================================
+
+              /** Поток saver. */
+              private void loadThumb(Uri u) {
+                  try {
+                      Bitmap bm = getContentResolver().loadThumbnail(u, new Size(256, 256), null);
+                      ui.post(() -> thumb.setImageBitmap(bm));
+                  } catch (Exception e) {
+                      log("Миниатюра: " + e);
+                  }
+              }
+
+              private void loadLastThumbAsync() {
+                  if (intentMode >= 0) return;
+                  saver.execute(() -> {
+                      Uri files = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL);
+                      String[] proj = {MediaStore.Files.FileColumns._ID, MediaStore.Files.FileColumns.MEDIA_TYPE};
+                      String sel = MediaStore.Files.FileColumns.RELATIVE_PATH + " LIKE ? AND ("
+                              + MediaStore.Files.FileColumns.MEDIA_TYPE + "=" + MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE + " OR "
+                              + MediaStore.Files.FileColumns.MEDIA_TYPE + "=" + MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO + ")";
+                      try (Cursor c = getContentResolver().query(files, proj, sel, new String[]{"DCIM/CamFix%"},
+                              MediaStore.Files.FileColumns.DATE_ADDED + " DESC")) {
+                          if (c != null && c.moveToFirst()) {
+                              long id = c.getLong(0);
+                              int type = c.getInt(1);
+                              boolean video = type == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO;
+                              Uri base = video ? MediaStore.Video.Media.EXTERNAL_CONTENT_URI : MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+                              Uri u = Uri.withAppendedPath(base, String.valueOf(id));
+                              if (lastUri == null) {
+                                  lastUri = u;
+                                  lastMime = video ? "video/mp4" : "image/jpeg";
+                                  loadThumb(u);
+                              }
+                          }
+                      } catch (Exception e) {
+                          log("Последний снимок: " + e);
+                      }
+                  });
+              }
+
+              private void openLast() {
+                  Uri u = lastUri;
+                  if (u == null) {
+                      toast("Пока нет снимков");
+                      return;
+                  }
+                  try {
+                      Intent i = new Intent(Intent.ACTION_VIEW);
+                      i.setDataAndType(u, lastMime != null ? lastMime : "image/*");
+                      i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                      startActivity(i);
+                  } catch (ActivityNotFoundException e) {
+                      toast("Галерея не найдена");
+                  }
+              }
+
+              // =====================================================================
+              //                               НАСТРОЙКИ
+              // =====================================================================
+
+              private void showSettings() {
+                  String[] items = {
+                          "Разрешение видео: " + ("2160".equals(videoRes) ? "4K" : "1080p"),
+                          "Частота видео: " + videoFps + " кадров/с",
+                          "Стабилизация видео: " + (stabilization ? "вкл" : "выкл"),
+                          "Сетка: " + (gridOn ? "вкл" : "выкл"),
+                          "Звук затвора: " + (soundOn ? "вкл" : "выкл"),
+                          "Диагностика (лог)"
+                  };
+                  new AlertDialog.Builder(this)
+                          .setTitle("Настройки")
+                          .setItems(items, (d, which) -> {
+                              boolean videoChanged = false;
+                              switch (which) {
+                                  case 0:
+                                      videoRes = "2160".equals(videoRes) ? "1080" : "2160";
+                                      videoChanged = true;
+                                      break;
+                                  case 1:
+                                      videoFps = videoFps == 60 ? 30 : 60;
+                                      videoChanged = true;
+                                      break;
+                                  case 2:
+                                      stabilization = !stabilization;
+                                      videoChanged = true;
+                                      break;
+                                  case 3:
+                                      gridOn = !gridOn;
+                                      break;
+                                  case 4:
+                                      soundOn = !soundOn;
+                                      break;
+                                  case 5:
+                                      showDiagnostics();
+                                      return;
+                                  default:
+                                      break;
+                              }
+                              prefs.edit().putString("videoRes", videoRes).putInt("videoFps", videoFps)
+                                      .putBoolean("grid", gridOn).putBoolean("stab", stabilization)
+                                      .putBoolean("sound", soundOn).apply();
+                              updateUi();
+                              if (videoChanged && mode == MODE_VIDEO) reconfigure();
+                              showSettings();
+                          })
+                          .setNegativeButton("Закрыть", null)
+                          .show();
+              }
+
+              private void showDiagnostics() {
+                  final String text = diagText();
+                  ScrollView sv = new ScrollView(this);
+                  TextView t = new TextView(this);
+                  t.setText(text);
+                  t.setTextSize(11);
+                  t.setTextIsSelectable(true);
+                  t.setPadding(dp(16), dp(8), dp(16), dp(8));
+                  sv.addView(t);
+                  new AlertDialog.Builder(this)
+                          .setTitle("Диагностика")
+                          .setView(sv)
+                          .setPositiveButton("Копировать", (d, w) -> {
+                              copyText(text);
+                              toast("Лог скопирован");
+                          })
+                          .setNegativeButton("Закрыть", null)
+                          .show();
+              }
+
+              // =====================================================================
+              //                          ВСПОМОГАТЕЛЬНЫЕ ВИДЫ
+              // =====================================================================
+
+              /** Вертикальный ползунок (зум, экспозиция). t: 0 — низ, 1 — верх. */
+              static class VSlider extends View {
+                  interface OnChange {
+                      void onChange(float t);
+                  }
+
+                  private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final Paint tick = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final Paint knob = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final Paint knobRing = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final Paint txt = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final Paint valTxt = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final Paint pill = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final boolean labelsLeft;
+                  private final float d;
+                  private float t = 0f;
+                  private float[] marks = new float[0];
+                  private String[] markLabels = new String[0];
+                  private String valueText = "";
+                  private OnChange listener;
+
+                  VSlider(Context c, boolean labelsLeft) {
+                      super(c);
+                      this.labelsLeft = labelsLeft;
+                      d = c.getResources().getDisplayMetrics().density;
+                      line.setColor(0xCCFFFFFF);
+                      line.setStrokeWidth(3 * d);
+                      line.setStrokeCap(Paint.Cap.ROUND);
+                      tick.setColor(0xFFFFFFFF);
+                      tick.setStrokeWidth(2 * d);
+                      knob.setColor(0xFFFFFFFF);
+                      knobRing.setColor(0xFFFFD54F);
+                      knobRing.setStyle(Paint.Style.STROKE);
+                      knobRing.setStrokeWidth(3 * d);
+                      txt.setColor(0xDDFFFFFF);
+                      txt.setTextSize(11 * d);
+                      txt.setShadowLayer(3 * d, 0, 0, Color.BLACK);
+                      valTxt.setColor(0xFFFFD54F);
+                      valTxt.setTextSize(14 * d);
+                      valTxt.setFakeBoldText(true);
+                      pill.setColor(0xAA000000);
+                  }
+
+                  void setListener(OnChange l) {
+                      listener = l;
+                  }
+
+                  void setValue(float v, String text) {
+                      t = Math.max(0f, Math.min(1f, v));
+                      valueText = text == null ? "" : text;
+                      invalidate();
+                  }
+
+                  void setMarks(float[] m, String[] l) {
+                      marks = m;
+                      markLabels = l;
+                      invalidate();
+                  }
+
+                  private float top() {
+                      return 18 * d;
+                  }
+
+                  private float bottom() {
+                      return getHeight() - 18 * d;
+                  }
+
+                  private float lineX() {
+                      return labelsLeft ? getWidth() - 22 * d : 22 * d;
+                  }
+
+                  @Override
+                  protected void onDraw(Canvas c) {
+                      float x = lineX(), tp = top(), bt = bottom();
+                      c.drawLine(x, tp, x, bt, line);
+                      for (int i = 0; i < marks.length; i++) {
+                          float y = bt - marks[i] * (bt - tp);
+                          c.drawLine(x - 7 * d, y, x + 7 * d, y, tick);
+                          if (i < markLabels.length && markLabels[i] != null) {
+                              String s = markLabels[i];
+                              float tw = txt.measureText(s);
+                              float tx = labelsLeft ? x - 12 * d - tw : x + 12 * d;
+                              c.drawText(s, tx, y + 4 * d, txt);
+                          }
+                      }
+                      float ky = bt - t * (bt - tp);
+                      c.drawCircle(x, ky, 11 * d, knob);
+                      c.drawCircle(x, ky, 11 * d, knobRing);
+                      if (!valueText.isEmpty()) {
+                          float tw = valTxt.measureText(valueText);
+                          float px = labelsLeft ? x - 18 * d - tw : x + 18 * d;
+                          c.drawRoundRect(px - 5 * d, ky - 12 * d, px + tw + 5 * d, ky + 8 * d, 8 * d, 8 * d, pill);
+                          c.drawText(valueText, px, ky + 3 * d, valTxt);
+                      }
+                  }
+
+                  @Override
+                  public boolean onTouchEvent(MotionEvent e) {
+                      int a = e.getActionMasked();
+                      if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_MOVE) {
+                          if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+                          float tp = top(), bt = bottom();
+                          float v = (bt - e.getY()) / (bt - tp);
+                          t = Math.max(0f, Math.min(1f, v));
+                          invalidate();
+                          if (listener != null) listener.onChange(t);
+                          return true;
+                      }
+                      return a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL || super.onTouchEvent(e);
+                  }
+              }
+
+              /** Сетка 3×3. */
+              static class GridOverlay extends View {
+                  private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+                  GridOverlay(Context c) {
+                      super(c);
+                      p.setColor(0x88FFFFFF);
+                      p.setStrokeWidth(2f);
+                  }
+
+                  @Override
+                  protected void onDraw(Canvas c) {
+                      float w = getWidth(), h = getHeight();
+                      c.drawLine(w / 3, 0, w / 3, h, p);
+                      c.drawLine(2 * w / 3, 0, 2 * w / 3, h, p);
+                      c.drawLine(0, h / 3, w, h / 3, p);
+                      c.drawLine(0, 2 * h / 3, w, 2 * h / 3, p);
+                  }
+              }
+
+              /** Кружок в месте касания. */
+              static class FocusRing extends View {
+                  private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private float x, y;
+                  private boolean visible;
+                  private final Runnable hide = () -> {
+                      visible = false;
+                      invalidate();
+                  };
+
+                  FocusRing(Context c) {
+                      super(c);
+                      p.setStyle(Paint.Style.STROKE);
+                      p.setStrokeWidth(4f);
+                      p.setColor(0xFFFFD54F);
+                  }
+
+                  void show(float x, float y) {
+                      this.x = x;
+                      this.y = y;
+                      visible = true;
+                      invalidate();
+                      removeCallbacks(hide);
+                      postDelayed(hide, 1200);
+                  }
+
+                  @Override
+                  protected void onDraw(Canvas c) {
+                      if (!visible) return;
+                      float r = getResources().getDisplayMetrics().density * 34;
+                      c.drawCircle(x, y, r, p);
+                  }
+              }
+          }
+          EOF_CAMFIX
+          cat > proj/app/camfix.jks.b64 <<'EOF_CAMFIX'
+          MIIJ9AIBAzCCCZ4GCSqGSIb3DQEHAaCCCY8EggmLMIIJhzCCBa4GCSqGSIb3DQEHAaCCBZ8EggWb
+          MIIFlzCCBZMGCyqGSIb3DQEMCgECoIIFQDCCBTwwZgYJKoZIhvcNAQUNMFkwOAYJKoZIhvcNAQUM
+          MCsEFF1hT9FzAZbHQYhehCrviWEa+nT3AgInEAIBIDAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQB
+          KgQQTmQMCbA0pfquX+3N9FoMjQSCBNDVcyIGlIODjENv4P5X6quc4+WWS/yjDcSvBn1Qj6Tc73Vi
+          WM/JIaCCt7dkbgjI55TJwfgIFIA1EgDv44EqpRveOegxZKepC9DcSAvjjf+G8hC2+ACB9qELSTzm
+          /VUhmWyKZ0TNdwVd8s+qa1jvCaQuN8KL9jJKjqdRMS4+a40ykHqHXMtGE0wk1TwmgHx3ZTWE2U6/
+          Lz1QoDLpIZaxAVR00Noi9iUP0T9Gp5Im9PwcWYXgF3sAy1X+5WEJCg6+JUkdogXQoui6PYIiQ5lO
+          d4z+KehV8rMLjqixQTWC4B7FUMYopJH+qAMi5MO2qFoBtEZzt85YphYFL+PjOu882adt0QMEmW7O
+          rpTTUjk/FnXMWe3NzXqFE/O1s+A8BlpGUwLP7NtB87wWm9E/U6TMSdh2MyjSVZKA+ClYBUGGfAlE
+          St3iBN3vdx3wOWh+iVZCskBl4jIFz0uuqe03qx7oKlQusSwKN0YXpPQjPAjn2la9XSPoXaIvUSHf
+          B64yOVJzE8eOiPqYrUr3OW4ftmSWWaGg49CmbBcHvBQL+4taCAE1AxgY0HqbgiyyQ1NPiOxh6js8
+          jkfPpuOG2sjUAJjPeU37ggaGKvRptqOlRmfgug8Ue+l0tNV1QlGPam4pDvGipszu9H1ulxy4hIdF
+          IgNuwunwlaktro7rq9s9BVbhKBbTLd9lh1IHsqqooRllgn4dDTQjx4xwVBvhqX4h2VtpjoyebR+j
+          aHV9f+DRP45KIF+/5cEvjSei2PCJ09HvDwZrg3PT7/Zmx4Nb2PzHYLRZRF9dj41iHrh1ZM6sao4I
+          Tnj7HcaQ8WjUmwQalXgE5yLeoe4MXev5qs4fHaPD6LG9eSk+XiBI1mvQXpdpoxZh6oJ7kM6Q2rNz
+          IDCp11IWNzV7nTFRYYPSVcQh4x0yoioqMnnGiAhJ8l0TJwlJX5j3GSGe5LHidlNyToPcRZ9uhct3
+          NPeXthXf4+aoanIXdpZbimp5Unr/pu6Fel6OFIlkaOeQFCNZV47HuFutlYOpvuStGIayyaHSuCgq
+          B8K3Q3EnMWDejSYD9v7H07d+cghzIOwlbuiE/A5MHtoTysytdEp8IGOMtyPYBaeqUrifT6isRket
+          ZG9zCmYHH075NKCLCGL6w/eMw/Wop7T9PqvMN8WNVBxE9+BmRaKYbbVLoBYR4TrnHRDHNa0RtIBm
+          jEOqiJF8tLmN/GWK1nRy1N1Nkn3I1EN/MkFfGiRlHbfF8+C9kAqvJMRRXESet37bgUVMSfQuGO8w
+          KDUdhP+FVnVGZZWFm+jXp2HqyQOIxYM0ieAgnJhn5EmxK+1B8rYhOh9xXxMv3HQWvdP+yzkYVH2w
+          BioSWA+R0JornpyU5bg21DvqpVMnHwjN7UwodVsULsdijj4bUnYZ7Evumw2XQwA9BUjCoth+mlcc
+          nlX92ch/jshiqwYB+m1t10WaJFwgAiEgK7xSsEbfZRCainb7p7z587qriyAylLRTA50k8+CPxAvg
+          6KBAOIahqDou0Zmu1YxSGgq6MmwyOVv7xd81Qh99vdHDt6r1v+7+jy4MRvoeIEhjjlJ4+zS6uWmW
+          /OA3jCIWFBwRQVZuR2cWNna/mLvjJ/oZcHUGaSm+QDCgtIXa91QVIbHZwnvdbfF0Dl5iXiOC+Ev+
+          zTFAMBsGCSqGSIb3DQEJFDEOHgwAYwBhAG0AZgBpAHgwIQYJKoZIhvcNAQkVMRQEElRpbWUgMTc5
+          NDkzMzE0NDg2NDCCA9EGCSqGSIb3DQEHBqCCA8IwggO+AgEAMIIDtwYJKoZIhvcNAQcBMGYGCSqG
+          SIb3DQEFDTBZMDgGCSqGSIb3DQEFDDArBBQoNsxrsYbAO/Wk3BDSNRm0s/aqDQICJxACASAwDAYI
+          KoZIhvcNAgkFADAdBglghkgBZQMEASoEEFS1eDHb6BQUdp7PlbpUl3+AggNAmHZyoRRg6cH8nXXE
+          rXeBeKJNKwGHPTsCg1KT2sgnrOuAdCS01gVhdEubYxOhwiRswF+aQb0tXE4B46Drhiv3ugh6YEN8
+          kcNuR6GfJ6ey0SND3eljBGC5XgyJIKvHzDsQCtkoBCwxGz9QUG407l1B2IK6d9oXJ7xJoZQPizrQ
+          dReUWSDKbUiZnDPf3EpVnlVwTTnRoSrp/CohuvhSeN6l4KJVjHs4LDCAifMTtwpbpcL4586Up10j
+          yCGFtCqvQLoc2x8wc4OrjPYcLetbkoGXrKsHD98JHfQeVT9mm4P6QGRKtd1RO2IvvTMhbupNU/qQ
+          kG7WwOhFyXnnqReHU8SuRXZOOrYm/rxNPYh42W6iKcxmIShtCY8Deb6QY+DdjDdAEpcqn1OIXkv8
+          jmH/TOOLMU3d+9w1lx0d0xLl6IQKwJEbT9EEfFgKDHFRG11tzkdrsnT95JlZphSSIncVKrauHujI
+          W/H+eMkWSvav+1BdfJGGWHaJFLtvenmNB5YVdOt70H2HeQKXPD5hlOSpBM2Zle81/PZuWpOqina5
+          P1pK487viZCUNOEPrHY+Ry8Bi8y6hIHGYthM5Ol0DUNkAaBpIyuaZvgnMBg6GiJ9ahkFBw8Q7zEO
+          JWfmY208V+5g3JD3iWWp6/UYMabtjd3OTdXgFuPcVaZy0Z10YdMcfz9IjRowHiKGayQckuPCjuYb
+          /MrFCzdCIEOzJ37jdDHejx8wZIEGGGixaQWdS/Gm1+i/t4//Yw3soBKwGCUgCnJoiJA1FvjI469+
+          fwiIcpVXUK3BEVZNBRzpGqiEhwlH+xGDQPg8d6iJZO4H2uS823xEETQSpVzA+T5lD3/Pa1Gxy/5f
+          GpX5cZySdTuZ6yC56bqm6MlwvOdkW9LKJhmB21YtSBa+A5fOmsjZwx3jvXDyL7aU33JLbfCSPhul
+          s483H9bz2vpATrCyjYb4+xp6wQrb/jA1adTmrbVlTeHDPgd0AF4hH8d8lV+o4vhLcFWt1rHBPUIr
+          Cr7NYzjD1/sFEDfUBE3wxNZ5mOCrB9aYv30VqjyILP5uaLIR/5DIoM1dOZXOfj/o597pj1L5vQdL
+          aa3exL0dgLeRiqv/J72XRX3vjXmAgTBNMDEwDQYJYIZIAWUDBAIBBQAEIGqFLV+xbkFfc9J/qW0p
+          RnAh3TAdxgQKwVfWptOqL/1WBBRKndbuxS1grf/wJqS2FjqVTFQfiQICJxA=
+          EOF_CAMFIX
+          base64 -d proj/app/camfix.jks.b64 > proj/app/camfix.jks
+
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build APK
+        working-directory: proj
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Upload artifact (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: camfix-apk
+          path: proj/app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp proj/app/build/outputs/apk/release/app-release.apk camfix.apk
+          gh release create "v21-build-${{ github.run_number }}" camfix.apk \
+            --repo "${{ github.repository }}" \
+            --title "CamFix 2.1 (сборка ${{ github.run_number }})" \
+            --notes "Скачайте camfix.apk ниже и установите. Перед первой установкой удалите старую версию CamFix." \
+            --latest
