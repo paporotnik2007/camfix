@@ -1,0 +1,777 @@
+name: Build CamFix APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create project files
+        run: |
+          mkdir -p proj/app/src/main/java/com/camfix
+          cat > proj/settings.gradle <<'EOF_CAMFIX'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "camfix"
+          include ':app'
+          EOF_CAMFIX
+          cat > proj/build.gradle <<'EOF_CAMFIX'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF_CAMFIX
+          cat > proj/gradle.properties <<'EOF_CAMFIX'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          EOF_CAMFIX
+          cat > proj/app/build.gradle <<'EOF_CAMFIX'
+          plugins {
+              id 'com.android.application'
+          }
+          android {
+              namespace 'com.camfix'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.camfix'
+                  minSdk 30
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+                  encoding 'UTF-8'
+              }
+          }
+          EOF_CAMFIX
+          cat > proj/app/src/main/AndroidManifest.xml <<'EOF_CAMFIX'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-feature android:name="android.hardware.camera.any" android:required="true" />
+              <application
+                  android:label="CamFix"
+                  android:allowBackup="false"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_CAMFIX
+          cat > proj/app/src/main/java/com/camfix/MainActivity.java <<'EOF_CAMFIX'
+          package com.camfix;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.ClipData;
+          import android.content.ClipboardManager;
+          import android.content.ContentValues;
+          import android.content.pm.PackageManager;
+          import android.graphics.ImageFormat;
+          import android.graphics.Rect;
+          import android.graphics.SurfaceTexture;
+          import android.hardware.camera2.CameraCaptureSession;
+          import android.hardware.camera2.CameraCharacteristics;
+          import android.hardware.camera2.CameraDevice;
+          import android.hardware.camera2.CameraManager;
+          import android.hardware.camera2.CameraMetadata;
+          import android.hardware.camera2.CaptureFailure;
+          import android.hardware.camera2.CaptureRequest;
+          import android.hardware.camera2.CaptureResult;
+          import android.hardware.camera2.TotalCaptureResult;
+          import android.hardware.camera2.params.OutputConfiguration;
+          import android.hardware.camera2.params.SessionConfiguration;
+          import android.hardware.camera2.params.StreamConfigurationMap;
+          import android.media.Image;
+          import android.media.ImageReader;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.os.Handler;
+          import android.os.HandlerThread;
+          import android.os.Looper;
+          import android.provider.MediaStore;
+          import android.util.Range;
+          import android.util.Size;
+          import android.view.Gravity;
+          import android.view.Surface;
+          import android.view.TextureView;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.widget.Button;
+          import android.widget.HorizontalScrollView;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import java.io.OutputStream;
+          import java.nio.ByteBuffer;
+          import java.text.SimpleDateFormat;
+          import java.util.ArrayList;
+          import java.util.Arrays;
+          import java.util.Date;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Set;
+          import java.util.TreeSet;
+          import java.util.concurrent.Executor;
+
+          public class MainActivity extends Activity {
+
+              /** Один режим запуска камеры. */
+              static class Mode {
+                  final String label;      // текст на кнопке
+                  final String openId;     // какую камеру открываем
+                  final String physicalId; // с какого физического модуля просим поток (или null)
+                  final Float zoom;        // зум для логической камеры (или null)
+
+                  Mode(String label, String openId, String physicalId, Float zoom) {
+                      this.label = label;
+                      this.openId = openId;
+                      this.physicalId = physicalId;
+                      this.zoom = zoom;
+                  }
+              }
+
+              private CameraManager cm;
+              private TextureView textureView;
+              private TextView logView;
+              private TextView statusView;
+              private ScrollView logScroll;
+              private LinearLayout modeBar;
+
+              private HandlerThread camThread;
+              private Handler camHandler;
+              private Executor camExec;
+              private final Handler ui = new Handler(Looper.getMainLooper());
+
+              // Всё ниже меняется только в потоке камеры (camHandler)
+              private CameraDevice device;
+              private CameraCaptureSession session;
+              private ImageReader reader;
+              private CaptureRequest.Builder previewBuilder;
+              private int sessionGen = 0;
+              private int jpegOrientation = 90;
+              private int failures = 0;
+
+              private volatile Mode current;
+              private volatile long frames = 0;
+              private volatile String activePhys = null;
+              private long lastFrames = 0;
+              private boolean resumePending = false;
+              private boolean initialized = false;
+
+              private final StringBuilder logText = new StringBuilder();
+
+              // ------------------------------------------------------------------ UI
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                  cm = (CameraManager) getSystemService(CAMERA_SERVICE);
+
+                  camThread = new HandlerThread("camera");
+                  camThread.start();
+                  camHandler = new Handler(camThread.getLooper());
+                  camExec = r -> camHandler.post(r);
+
+                  int screenW = getResources().getDisplayMetrics().widthPixels;
+                  int screenH = getResources().getDisplayMetrics().heightPixels;
+                  int previewH = Math.min(screenW * 4 / 3, (int) (screenH * 0.55f));
+                  int previewW = previewH * 3 / 4;
+
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setBackgroundColor(0xFF000000);
+
+                  textureView = new TextureView(this);
+                  LinearLayout.LayoutParams tvp = new LinearLayout.LayoutParams(previewW, previewH);
+                  tvp.gravity = Gravity.CENTER_HORIZONTAL;
+                  root.addView(textureView, tvp);
+
+                  statusView = new TextView(this);
+                  statusView.setTextColor(0xFFFFFF66);
+                  statusView.setTextSize(13);
+                  statusView.setPadding(16, 6, 16, 6);
+                  statusView.setText("Выберите режим ниже");
+                  root.addView(statusView);
+
+                  LinearLayout actions = new LinearLayout(this);
+                  actions.setOrientation(LinearLayout.HORIZONTAL);
+                  Button shutter = new Button(this);
+                  shutter.setText("📷 СНЯТЬ");
+                  shutter.setTextSize(18);
+                  shutter.setOnClickListener(v -> takePhoto());
+                  actions.addView(shutter, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f));
+                  Button copy = new Button(this);
+                  copy.setText("Копировать лог");
+                  copy.setAllCaps(false);
+                  copy.setOnClickListener(v -> copyLog());
+                  actions.addView(copy, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                  root.addView(actions);
+
+                  HorizontalScrollView hs = new HorizontalScrollView(this);
+                  modeBar = new LinearLayout(this);
+                  modeBar.setOrientation(LinearLayout.HORIZONTAL);
+                  hs.addView(modeBar);
+                  root.addView(hs);
+
+                  logScroll = new ScrollView(this);
+                  logView = new TextView(this);
+                  logView.setTextColor(0xFFDDDDDD);
+                  logView.setTextSize(11);
+                  logView.setPadding(16, 8, 16, 8);
+                  logView.setTextIsSelectable(true);
+                  logScroll.addView(logView);
+                  root.addView(logScroll, new LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+                  setContentView(root);
+
+                  textureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+                      @Override
+                      public void onSurfaceTextureAvailable(SurfaceTexture st, int w, int h) {
+                          if (resumePending && current != null) {
+                              resumePending = false;
+                              startMode(current);
+                          }
+                      }
+
+                      @Override
+                      public void onSurfaceTextureSizeChanged(SurfaceTexture st, int w, int h) { }
+
+                      @Override
+                      public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
+                          return true;
+                      }
+
+                      @Override
+                      public void onSurfaceTextureUpdated(SurfaceTexture st) { }
+                  });
+
+                  ui.post(tick);
+
+                  if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                      init();
+                  } else {
+                      requestPermissions(new String[]{Manifest.permission.CAMERA}, 1);
+                  }
+              }
+
+              @Override
+              public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+                  super.onRequestPermissionsResult(code, perms, results);
+                  if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+                      init();
+                  } else {
+                      log("Нет разрешения на камеру. Разрешите его в настройках приложения и перезапустите.");
+                  }
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  if (current != null) {
+                      if (textureView.isAvailable()) startMode(current);
+                      else resumePending = true;
+                  }
+              }
+
+              @Override
+              protected void onPause() {
+                  camHandler.post(this::closeCamera);
+                  super.onPause();
+              }
+
+              @Override
+              protected void onDestroy() {
+                  ui.removeCallbacks(tick);
+                  camHandler.post(this::closeCamera);
+                  camThread.quitSafely();
+                  super.onDestroy();
+              }
+
+              private final Runnable tick = new Runnable() {
+                  @Override
+                  public void run() {
+                      Mode m = current;
+                      long f = frames;
+                      long fps = Math.max(0, f - lastFrames);
+                      lastFrames = f;
+                      if (m != null) {
+                          String s = m.label + "  |  кадров/с: " + fps;
+                          String ap = activePhys;
+                          if (ap != null) s += "  |  работает модуль: " + ap;
+                          statusView.setText(s);
+                      }
+                      ui.postDelayed(this, 1000);
+                  }
+              };
+
+              private void log(String s) {
+                  ui.post(() -> {
+                      logText.append(s).append('\n');
+                      logView.setText(logText);
+                      logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
+                  });
+              }
+
+              private void copyLog() {
+                  ClipboardManager cb = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                  cb.setPrimaryClip(ClipData.newPlainText("CamFix log", logText.toString()));
+                  Toast.makeText(this, "Лог скопирован", Toast.LENGTH_SHORT).show();
+              }
+
+              // ------------------------------------------------------- список камер
+
+              private void init() {
+                  if (initialized) return;
+                  initialized = true;
+                  log("CamFix. Устройство: " + Build.MODEL + ", Android SDK " + Build.VERSION.SDK_INT);
+                  log("Кнопки с пометкой «шир.» — широкоугольный модуль (он сломан). Их лучше не нажимать.");
+                  log("Порядок проб: сначала кнопки «0→N», потом «прямо N», потом «зум».");
+                  log("------");
+
+                  List<Mode> first = new ArrayList<>();
+                  List<Mode> direct = new ArrayList<>();
+                  List<Mode> wide = new ArrayList<>();
+                  List<Mode> zoom = new ArrayList<>();
+                  List<Mode> plain = new ArrayList<>();
+
+                  try {
+                      String[] ids = cm.getCameraIdList();
+                      Set<String> listed = new TreeSet<>(Arrays.asList(ids));
+                      for (String id : ids) {
+                          CameraCharacteristics c = cm.getCameraCharacteristics(id);
+                          log("Камера " + id + ": " + describe(c));
+
+                          Set<String> phys = new TreeSet<>(c.getPhysicalCameraIds());
+                          String uw = null;
+                          if (phys.size() > 1) {
+                              float minF = Float.MAX_VALUE;
+                              for (String p : phys) {
+                                  try {
+                                      float f = minFocal(cm.getCameraCharacteristics(p));
+                                      if (f < minF) { minF = f; uw = p; }
+                                  } catch (Exception ignored) { }
+                              }
+                          }
+                          for (String p : phys) {
+                              String tag;
+                              try {
+                                  CameraCharacteristics pc = cm.getCameraCharacteristics(p);
+                                  log("   модуль " + p + ": " + describe(pc));
+                                  tag = String.format(Locale.US, "%.1fмм", minFocal(pc));
+                              } catch (Exception e) {
+                                  log("   модуль " + p + ": не читается: " + e);
+                                  tag = "?";
+                              }
+                              boolean isUw = p.equals(uw);
+                              if (isUw) tag += " шир.";
+                              Mode viaLogical = new Mode(id + "→" + p + " " + tag, id, p, null);
+                              Mode directOpen = new Mode("прямо " + p + " " + tag, p, null, null);
+                              if (isUw) {
+                                  wide.add(viaLogical);
+                                  if (!listed.contains(p)) wide.add(directOpen);
+                              } else {
+                                  first.add(viaLogical);
+                                  if (!listed.contains(p)) direct.add(directOpen);
+                              }
+                          }
+                          if (!phys.isEmpty()) {
+                              Range<Float> zr = c.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+                              if (zr != null) {
+                                  if (zr.getUpper() >= 3f) zoom.add(new Mode(id + " зум 3x", id, null, 3f));
+                                  if (zr.getUpper() >= 2f) zoom.add(new Mode(id + " зум 2x", id, null, 2f));
+                                  if (zr.contains(1f)) zoom.add(new Mode(id + " зум 1x", id, null, 1f));
+                              }
+                          }
+                          Integer facing = c.get(CameraCharacteristics.LENS_FACING);
+                          String fs = (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) ? "фронт" : "задняя";
+                          plain.add(new Mode("обычная " + id + " (" + fs + ")", id, null, null));
+                      }
+                  } catch (Exception e) {
+                      log("Ошибка чтения списка камер: " + e);
+                  }
+                  log("------");
+
+                  List<Mode> all = new ArrayList<>();
+                  all.addAll(first);
+                  all.addAll(direct);
+                  all.addAll(zoom);
+                  all.addAll(plain);
+                  all.addAll(wide);
+                  for (Mode m : all) {
+                      Button b = new Button(this);
+                      b.setText(m.label);
+                      b.setAllCaps(false);
+                      b.setOnClickListener(v -> startMode(m));
+                      modeBar.addView(b);
+                  }
+              }
+
+              private static float minFocal(CameraCharacteristics c) {
+                  float[] fl = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                  float min = Float.MAX_VALUE;
+                  if (fl != null) for (float f : fl) min = Math.min(min, f);
+                  return min;
+              }
+
+              private static boolean contains(int[] arr, int v) {
+                  if (arr == null) return false;
+                  for (int x : arr) if (x == v) return true;
+                  return false;
+              }
+
+              private String describe(CameraCharacteristics c) {
+                  StringBuilder s = new StringBuilder();
+                  Integer f = c.get(CameraCharacteristics.LENS_FACING);
+                  if (f == null) s.append("?");
+                  else if (f == CameraCharacteristics.LENS_FACING_BACK) s.append("задняя");
+                  else if (f == CameraCharacteristics.LENS_FACING_FRONT) s.append("фронт");
+                  else s.append("внешняя");
+                  float[] fl = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                  if (fl != null) s.append(", фокусное ").append(Arrays.toString(fl)).append(" мм");
+                  Rect a = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+                  if (a != null) s.append(", матрица ").append(a.width()).append("x").append(a.height());
+                  int[] af = c.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+                  boolean hasAf = false;
+                  if (af != null) for (int m : af) if (m != CameraMetadata.CONTROL_AF_MODE_OFF) hasAf = true;
+                  s.append(hasAf ? ", автофокус" : ", без автофокуса");
+                  Integer lvl = c.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL);
+                  s.append(", уровень ").append(levelName(lvl));
+                  Range<Float> zr = c.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+                  if (zr != null) s.append(", зум ").append(zr);
+                  return s.toString();
+              }
+
+              private static String levelName(Integer l) {
+                  if (l == null) return "?";
+                  switch (l) {
+                      case CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY: return "LEGACY";
+                      case CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED: return "LIMITED";
+                      case CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_FULL: return "FULL";
+                      case CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_3: return "LEVEL_3";
+                      case CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_EXTERNAL: return "EXTERNAL";
+                      default: return String.valueOf(l);
+                  }
+              }
+
+              private static String deviceError(int e) {
+                  switch (e) {
+                      case CameraDevice.StateCallback.ERROR_CAMERA_IN_USE: return "камера занята другим приложением";
+                      case CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE: return "открыто слишком много камер";
+                      case CameraDevice.StateCallback.ERROR_CAMERA_DISABLED: return "камера отключена политикой";
+                      case CameraDevice.StateCallback.ERROR_CAMERA_DEVICE: return "сбой самого модуля/драйвера (ERROR_CAMERA_DEVICE)";
+                      case CameraDevice.StateCallback.ERROR_CAMERA_SERVICE: return "упал камерный сервис Android (ERROR_CAMERA_SERVICE)";
+                      default: return "код " + e;
+                  }
+              }
+
+              // ------------------------------------------------------ работа камеры
+
+              private void startMode(Mode m) {
+                  if (!textureView.isAvailable()) {
+                      log("Превью ещё не готово, нажмите кнопку ещё раз через секунду");
+                      return;
+                  }
+                  current = m;
+                  camHandler.post(() -> {
+                      closeCamera();
+                      openMode(m);
+                  });
+              }
+
+              /** Только в потоке камеры. */
+              private void closeCamera() {
+                  sessionGen++;
+                  try { if (session != null) session.close(); } catch (Exception ignored) { }
+                  session = null;
+                  try { if (device != null) device.close(); } catch (Exception ignored) { }
+                  device = null;
+                  try { if (reader != null) reader.close(); } catch (Exception ignored) { }
+                  reader = null;
+                  previewBuilder = null;
+              }
+
+              /** Только в потоке камеры. */
+              private void openMode(Mode m) {
+                  final int gen = sessionGen;
+                  activePhys = null;
+                  failures = 0;
+                  log("▶ " + m.label + ": открываю камеру " + m.openId
+                          + (m.physicalId != null ? ", поток только с модуля " + m.physicalId : "")
+                          + (m.zoom != null ? ", зум " + m.zoom : ""));
+                  try {
+                      cm.openCamera(m.openId, camExec, new CameraDevice.StateCallback() {
+                          @Override
+                          public void onOpened(CameraDevice d) {
+                              if (gen != sessionGen) { d.close(); return; }
+                              device = d;
+                              log("   камера открыта");
+                              createSession(m, gen, false);
+                          }
+
+                          @Override
+                          public void onDisconnected(CameraDevice d) {
+                              log("   камера отключена системой");
+                              d.close();
+                              if (device == d) device = null;
+                          }
+
+                          @Override
+                          public void onError(CameraDevice d, int error) {
+                              log("   ОШИБКА: " + deviceError(error));
+                              d.close();
+                              if (device == d) device = null;
+                          }
+                      });
+                  } catch (Exception e) {
+                      log("   не удалось открыть: " + e);
+                  }
+              }
+
+              /** Только в потоке камеры. */
+              private void createSession(Mode m, int gen, boolean smallJpeg) {
+                  try {
+                      CameraCharacteristics openChars = cm.getCameraCharacteristics(m.openId);
+                      CameraCharacteristics streamChars = openChars;
+                      if (m.physicalId != null) streamChars = cm.getCameraCharacteristics(m.physicalId);
+
+                      StreamConfigurationMap map = streamChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                      if (map == null) map = openChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                      if (map == null) { log("   нет списка разрешений"); return; }
+
+                      Size pv = choosePreview(map.getOutputSizes(SurfaceTexture.class));
+                      Size jp = chooseJpeg(map.getOutputSizes(ImageFormat.JPEG), smallJpeg);
+                      if (pv == null || jp == null) { log("   не найдено подходящее разрешение"); return; }
+                      Integer so = streamChars.get(CameraCharacteristics.SENSOR_ORIENTATION);
+                      jpegOrientation = so == null ? 90 : so;
+                      log("   превью " + pv + ", фото " + jp);
+
+                      SurfaceTexture st = textureView.getSurfaceTexture();
+                      if (st == null) { log("   превью недоступно"); return; }
+                      st.setDefaultBufferSize(pv.getWidth(), pv.getHeight());
+                      Surface previewSurface = new Surface(st);
+
+                      if (reader != null) { reader.close(); reader = null; }
+                      reader = ImageReader.newInstance(jp.getWidth(), jp.getHeight(), ImageFormat.JPEG, 2);
+                      reader.setOnImageAvailableListener(this::onJpeg, camHandler);
+
+                      OutputConfiguration o1 = new OutputConfiguration(previewSurface);
+                      OutputConfiguration o2 = new OutputConfiguration(reader.getSurface());
+                      if (m.physicalId != null) {
+                          o1.setPhysicalCameraId(m.physicalId);
+                          o2.setPhysicalCameraId(m.physicalId);
+                      }
+
+                      previewBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+                      previewBuilder.addTarget(previewSurface);
+                      applyCommon(previewBuilder, m, openChars);
+
+                      SessionConfiguration sc = new SessionConfiguration(
+                              SessionConfiguration.SESSION_REGULAR,
+                              Arrays.asList(o1, o2),
+                              camExec,
+                              new CameraCaptureSession.StateCallback() {
+                                  @Override
+                                  public void onConfigured(CameraCaptureSession s) {
+                                      if (gen != sessionGen) { s.close(); return; }
+                                      session = s;
+                                      log("   сессия готова, запускаю превью");
+                                      try {
+                                          s.setRepeatingRequest(previewBuilder.build(), previewCallback, camHandler);
+                                      } catch (Exception e) {
+                                          log("   ошибка запуска превью: " + e);
+                                      }
+                                  }
+
+                                  @Override
+                                  public void onConfigureFailed(CameraCaptureSession s) {
+                                      if (gen != sessionGen) return;
+                                      if (!smallJpeg) {
+                                          log("   сессия не настроилась, пробую меньшее разрешение фото");
+                                          createSession(m, gen, true);
+                                      } else {
+                                          log("   сессия не настроилась (драйвер отказал в этой комбинации)");
+                                      }
+                                  }
+                              });
+                      device.createCaptureSession(sc);
+                  } catch (Exception e) {
+                      log("   ошибка настройки: " + e);
+                  }
+              }
+
+              private void applyCommon(CaptureRequest.Builder b, Mode m, CameraCharacteristics openChars) {
+                  b.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+                  b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON);
+                  int[] af = openChars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+                  if (contains(af, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)) {
+                      b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+                  }
+                  if (m.zoom != null) b.set(CaptureRequest.CONTROL_ZOOM_RATIO, m.zoom);
+              }
+
+              private final CameraCaptureSession.CaptureCallback previewCallback = new CameraCaptureSession.CaptureCallback() {
+                  @Override
+                  public void onCaptureCompleted(CameraCaptureSession s, CaptureRequest r, TotalCaptureResult res) {
+                      frames++;
+                      String ap = res.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID);
+                      if (ap != null && !ap.equals(activePhys)) {
+                          activePhys = ap;
+                          log("   сейчас работает физический модуль: " + ap);
+                      }
+                  }
+
+                  @Override
+                  public void onCaptureFailed(CameraCaptureSession s, CaptureRequest r, CaptureFailure f) {
+                      failures++;
+                      if (failures <= 5) {
+                          log("   кадр потерян, причина: " + (f.getReason() == CaptureFailure.REASON_FLUSHED ? "сброс" : "ошибка драйвера"));
+                      }
+                  }
+              };
+
+              private static Size choosePreview(Size[] sizes) {
+                  if (sizes == null || sizes.length == 0) return null;
+                  Size best = null;
+                  for (Size z : sizes) {
+                      if (z.getWidth() * 3 == z.getHeight() * 4 && z.getWidth() <= 1920) {
+                          if (best == null || z.getWidth() > best.getWidth()) best = z;
+                      }
+                  }
+                  if (best == null) {
+                      for (Size z : sizes) {
+                          if (z.getWidth() <= 1920 && (best == null || z.getWidth() > best.getWidth())) best = z;
+                      }
+                  }
+                  return best != null ? best : sizes[0];
+              }
+
+              private static Size chooseJpeg(Size[] sizes, boolean small) {
+                  if (sizes == null || sizes.length == 0) return null;
+                  Size best = null;
+                  for (Size z : sizes) {
+                      if (small && z.getWidth() > 2000) continue;
+                      long area = (long) z.getWidth() * z.getHeight();
+                      if (best == null || area > (long) best.getWidth() * best.getHeight()) best = z;
+                  }
+                  return best != null ? best : sizes[sizes.length - 1];
+              }
+
+              // ------------------------------------------------------------ съёмка
+
+              private void takePhoto() {
+                  camHandler.post(() -> {
+                      Mode m = current;
+                      if (session == null || device == null || reader == null || m == null) {
+                          log("Сначала выберите режим, в котором идёт картинка");
+                          return;
+                      }
+                      try {
+                          CaptureRequest.Builder b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+                          b.addTarget(reader.getSurface());
+                          applyCommon(b, m, cm.getCameraCharacteristics(m.openId));
+                          b.set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation);
+                          b.set(CaptureRequest.JPEG_QUALITY, (byte) 95);
+                          log("Снимаю...");
+                          session.capture(b.build(), new CameraCaptureSession.CaptureCallback() {
+                              @Override
+                              public void onCaptureFailed(CameraCaptureSession s, CaptureRequest r, CaptureFailure f) {
+                                  log("   снимок не удался (причина " + f.getReason() + ")");
+                              }
+                          }, camHandler);
+                      } catch (Exception e) {
+                          log("   ошибка съёмки: " + e);
+                      }
+                  });
+              }
+
+              private void onJpeg(ImageReader r) {
+                  byte[] data;
+                  try (Image img = r.acquireNextImage()) {
+                      if (img == null) return;
+                      ByteBuffer buf = img.getPlanes()[0].getBuffer();
+                      data = new byte[buf.remaining()];
+                      buf.get(data);
+                  } catch (Exception e) {
+                      log("   ошибка чтения снимка: " + e);
+                      return;
+                  }
+                  try {
+                      String name = "CamFix_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".jpg";
+                      ContentValues v = new ContentValues();
+                      v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
+                      v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+                      v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/CamFix");
+                      v.put(MediaStore.Images.Media.IS_PENDING, 1);
+                      Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+                      if (uri == null) throw new IllegalStateException("галерея не приняла файл");
+                      try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+                          if (os == null) throw new IllegalStateException("не открылся файл");
+                          os.write(data);
+                      }
+                      v.clear();
+                      v.put(MediaStore.Images.Media.IS_PENDING, 0);
+                      getContentResolver().update(uri, v, null, null);
+                      log("   ✔ СОХРАНЕНО: DCIM/CamFix/" + name + " (" + (data.length / 1024) + " КБ)");
+                      ui.post(() -> Toast.makeText(this, "Фото сохранено", Toast.LENGTH_SHORT).show());
+                  } catch (Exception e) {
+                      log("   ошибка сохранения: " + e);
+                  }
+              }
+          }
+          EOF_CAMFIX
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build APK
+        working-directory: proj
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Upload artifact (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: camfix-apk
+          path: proj/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp proj/app/build/outputs/apk/debug/app-debug.apk camfix.apk
+          gh release create "build-${{ github.run_number }}" camfix.apk \
+            --repo "${{ github.repository }}" \
+            --title "CamFix build ${{ github.run_number }}" \
+            --notes "Скачайте camfix.apk ниже и установите." \
+            --latest
